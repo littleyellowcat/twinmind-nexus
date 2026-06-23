@@ -1,3 +1,44 @@
+# TwinMind Archive
+
+> 基于 `MODULAR-RAG-MCP-SERVER` 扩展的项目知识数字孪生工作台：把一个代码项目摄取为“档案馆”，抽取模块、文件、函数、配置、概念、关系和证据卡，再通过 Agent 模式进行架构导览、影响分析、风险审计和证据问答。
+
+当前项目位置：
+
+```text
+/Users/kitten/MultimodalRAG/TwinMind Archive
+```
+
+## 快速体验
+
+```bash
+cd "/Users/kitten/MultimodalRAG/TwinMind Archive"
+source .venv/bin/activate
+streamlit run src/observability/dashboard/app.py
+```
+
+打开：
+
+```text
+http://127.0.0.1:8501
+```
+
+进入左侧 `TwinMind 档案馆` 页面，可以通过 `示例项目摄取流程` 一键填入示例项目路径，然后点击 `构建档案`。
+
+更详细的使用说明见：
+
+[docs/twinmind_archive_quickstart.md](docs/twinmind_archive_quickstart.md)
+
+## TwinMind Archive 新增能力
+
+- 全局中英文切换基础，主要 Dashboard 页面会跟随切换
+- 项目摄取：扫描代码、文档和配置，生成项目档案
+- 项目知识图谱：实体、关系、证据卡、档案展厅
+- Agent 查询：架构导览、影响分析、风险审计、证据问答
+- MCP 工具：`ingest_project_archive`、`query_project_twin`
+- 图存储：SQLite 默认，Kuzu 可选
+
+---
+
 # Modular RAG MCP Server
 
 > 一个可插拔、可观测的模块化 RAG（检索增强生成）服务框架，通过 MCP（Model Context Protocol）协议对外暴露工具接口，支持 Copilot / Claude 等 AI 助手直接调用。同时也是一份专为**大模型相关岗位学习与面试求职**设计的实战项目与配套教学资源。

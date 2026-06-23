@@ -14,10 +14,11 @@ Layout:
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict
 
 import streamlit as st
 
+from src.observability.dashboard.i18n import current_language, t
 from src.observability.dashboard.services.trace_service import TraceService
 
 logger = logging.getLogger(__name__)
@@ -25,19 +26,19 @@ logger = logging.getLogger(__name__)
 
 def render() -> None:
     """Render the Ingestion Traces page."""
-    st.header("🔬 Ingestion Traces")
+    language = current_language()
+    st.header(f"🔬 {t('trace.ingestion.header', language)}")
 
     svc = TraceService()
     traces = svc.list_traces(trace_type="ingestion")
 
     if not traces:
-        st.info("No ingestion traces recorded yet. Run an ingestion first!")
+        st.info(t("trace.ingestion.empty", language))
         return
 
-    st.subheader(f"📋 Trace History ({len(traces)})")
+    st.subheader(f"📋 {t('trace.ingestion.history', language)} ({len(traces)})")
 
     for idx, trace in enumerate(traces):
-        trace_id = trace.get("trace_id", "unknown")
         started = trace.get("started_at", "—")
         total_ms = trace.get("elapsed_ms")
         total_label = f"{total_ms:.0f} ms" if total_ms is not None else "—"

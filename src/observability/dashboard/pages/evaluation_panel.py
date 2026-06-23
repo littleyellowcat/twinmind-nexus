@@ -17,6 +17,8 @@ from typing import Any, Dict, List, Optional
 
 import streamlit as st
 
+from src.observability.dashboard.i18n import current_language, t
+
 logger = logging.getLogger(__name__)
 
 # Default golden test set location
@@ -27,25 +29,22 @@ EVAL_HISTORY_PATH = Path("logs/eval_history.jsonl")
 
 def render() -> None:
     """Render the Evaluation Panel page."""
-    st.header("📏 Evaluation Panel")
-    st.markdown(
-        "Run evaluation against a **golden test set** to measure retrieval "
-        "and generation quality. Results include per-query details and "
-        "aggregate metrics."
-    )
+    language = current_language()
+    st.header(f"📏 {t('eval.header', language)}")
+    st.markdown(t("eval.intro", language))
 
     # ── Configuration Section ──────────────────────────────────────
-    st.subheader("⚙️ Configuration")
+    st.subheader(f"⚙️ {t('eval.config', language)}")
 
     col1, col2, col3 = st.columns(3)
 
     with col1:
         backend = st.selectbox(
-            "Evaluator Backend",
+            t("eval.backend", language),
             options=["custom", "ragas", "composite"],
             index=0,
             key="eval_backend",
-            help="Select which evaluator backend to use.",
+            help=t("eval.backend_help", language),
         )
 
     # Show info/warning based on selected backend
@@ -70,27 +69,25 @@ def render() -> None:
 
     with col3:
         collection = st.text_input(
-            "Collection (optional)",
+            t("eval.collection_optional", language),
             value="",
             key="eval_collection",
-            help="Limit retrieval to a specific collection.",
+            help=t("eval.collection_help", language),
         )
 
     # Golden test set file selection
     golden_path_str = st.text_input(
-        "Golden Test Set Path",
+        t("eval.golden_path", language),
         value=str(DEFAULT_GOLDEN_SET),
         key="eval_golden_path",
-        help="Path to the golden_test_set.json file.",
+        help=t("eval.golden_help", language),
     )
     golden_path = Path(golden_path_str)
 
     # Validate golden set exists
     if not golden_path.exists():
         st.warning(
-            f"⚠️ **Golden test set not found:** `{golden_path}`. "
-            "Create a JSON file with test queries and expected results. "
-            "See `tests/fixtures/golden_test_set.json` for the format."
+            f"⚠️ {t('eval.golden_missing', language, path=golden_path)}"
         )
 
     # ── Answer Input Section (for Ragas) ───────────────────────────
@@ -139,7 +136,7 @@ def render() -> None:
     st.divider()
 
     run_clicked = st.button(
-        "▶️  Run Evaluation",
+        f"▶️  {t('eval.run', language)}",
         type="primary",
         key="eval_run_btn",
         disabled=not golden_path.exists(),
@@ -212,7 +209,7 @@ def _execute_evaluation(
 
     from src.core.settings import load_settings
     from src.libs.evaluator.evaluator_factory import EvaluatorFactory
-    from src.observability.evaluation.eval_runner import EvalRunner, load_test_set
+    from src.observability.evaluation.eval_runner import EvalRunner
 
     settings = load_settings()
 
@@ -269,9 +266,9 @@ def _try_create_hybrid_search(settings: Any, collection: str = "default") -> Any
     (e.g., no indexed data).
     """
     try:
-        from src.core.query_engine.query_processor import QueryProcessor
-        from src.core.query_engine.hybrid_search import create_hybrid_search
         from src.core.query_engine.dense_retriever import create_dense_retriever
+        from src.core.query_engine.hybrid_search import create_hybrid_search
+        from src.core.query_engine.query_processor import QueryProcessor
         from src.core.query_engine.sparse_retriever import create_sparse_retriever
         from src.ingestion.storage.bm25_indexer import BM25Indexer
         from src.libs.embedding.embedding_factory import EmbeddingFactory

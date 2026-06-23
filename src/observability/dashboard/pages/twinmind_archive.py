@@ -19,6 +19,8 @@ from src.project_archive.service import ProjectArchiveService
 from src.project_archive.types import AgentResult, ProjectArchiveDraft, QueryMode
 
 ARCHIVE_STORAGE_DIR = Path("data/project_archive")
+SAMPLE_PROJECT_PATH = "tests/fixtures/project_archive_sample"
+SAMPLE_PROJECT_ID = "sample-project"
 
 MODE_LABEL_KEYS = {
     QueryMode.ARCHITECTURE_TOUR: "twin.mode.architecture_tour",
@@ -204,11 +206,28 @@ def _render_query_panel(
 
 def _render_ingestion_panel(service: ProjectArchiveService, language: str) -> None:
     st.subheader(t("twin.ingest_project", language))
+    with st.expander(t("twin.example_flow", language), expanded=False):
+        st.caption(t("twin.example_intro", language))
+        st.markdown(t("twin.example_steps", language))
+        if st.button(t("twin.use_sample", language), key="twinmind_use_sample"):
+            st.session_state["twinmind_project_path"] = SAMPLE_PROJECT_PATH
+            st.session_state["twinmind_project_id"] = SAMPLE_PROJECT_ID
+            st.success(t("twin.sample_ready", language))
+            st.rerun()
+
     col_path, col_id = st.columns([3, 1])
     with col_path:
-        project_path = st.text_input(t("twin.project_path", language), value=".")
+        project_path = st.text_input(
+            t("twin.project_path", language),
+            value=".",
+            key="twinmind_project_path",
+        )
     with col_id:
-        project_id = st.text_input(t("twin.project_id", language), value="current-project")
+        project_id = st.text_input(
+            t("twin.project_id", language),
+            value="current-project",
+            key="twinmind_project_id",
+        )
 
     if st.button(t("twin.build_archive", language), key="twinmind_ingest"):
         try:

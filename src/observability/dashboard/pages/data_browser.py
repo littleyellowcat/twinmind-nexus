@@ -13,17 +13,19 @@ from pathlib import Path
 
 import streamlit as st
 
+from src.observability.dashboard.i18n import current_language, t
 from src.observability.dashboard.services.data_service import DataService
 
 
 def render() -> None:
     """Render the Data Browser page."""
-    st.header("🔍 Data Browser")
+    language = current_language()
+    st.header(f"🔍 {t('data.header', language)}")
 
     try:
         svc = DataService()
     except Exception as exc:
-        st.error(f"Failed to initialise DataService: {exc}")
+        st.error(t("data.init_failed", language, error=exc))
         return
 
     # ── Collection selector ────────────────────────────────────────
@@ -31,7 +33,7 @@ def render() -> None:
     if "default" not in collections:
         collections.insert(0, "default")
     collection = st.selectbox(
-        "Collection",
+        t("data.collection", language),
         options=collections,
         index=0,
         key="db_collection_filter",
@@ -40,36 +42,47 @@ def render() -> None:
 
     # ── Danger zone: clear all data ────────────────────────────────
     st.divider()
-    with st.expander("⚠️ Danger Zone", expanded=False):
-        st.warning(
-            "This will **permanently delete** all data: "
-            "ChromaDB collections, BM25 indexes, images, ingestion history, and trace logs."
-        )
+    with st.expander(f"⚠️ {t('data.danger_zone', language)}", expanded=False):
+        st.warning(t("data.danger_warning", language))
         col_btn, col_status = st.columns([1, 2])
         with col_btn:
-            if st.button("🗑️ Clear All Data", type="primary", key="btn_clear_all"):
+            if st.button(
+                f"🗑️ {t('data.clear_all', language)}",
+                type="primary",
+                key="btn_clear_all",
+            ):
                 st.session_state["confirm_clear"] = True
 
         if st.session_state.get("confirm_clear"):
-            st.error("Are you sure? This action cannot be undone!")
+            st.error(t("data.confirm_clear", language))
             c1, c2, _ = st.columns([1, 1, 2])
             with c1:
-                if st.button("✅ Yes, delete everything", key="btn_confirm_clear"):
+                if st.button(
+                    f"✅ {t('data.confirm_delete', language)}",
+                    key="btn_confirm_clear",
+                ):
                     result = svc.reset_all()
                     st.session_state["confirm_clear"] = False
                     if result["errors"]:
                         st.warning(
-                            f"Cleared with {len(result['errors'])} error(s): "
-                            + "; ".join(result["errors"])
+                            t(
+                                "data.cleared_with_errors",
+                                language,
+                                count=len(result["errors"]),
+                                errors="; ".join(result["errors"]),
+                            )
                         )
                     else:
                         st.success(
-                            f"All data cleared! "
-                            f"{result['collections_deleted']} collection(s) deleted."
+                            t(
+                                "data.cleared",
+                                language,
+                                count=result["collections_deleted"],
+                            )
                         )
                     st.rerun()
             with c2:
-                if st.button("❌ Cancel", key="btn_cancel_clear"):
+                if st.button(f"❌ {t('data.cancel', language)}", key="btn_cancel_clear"):
                     st.session_state["confirm_clear"] = False
                     st.rerun()
 
@@ -79,32 +92,32 @@ def render() -> None:
     try:
         docs = svc.list_documents(coll_arg)
     except Exception as exc:
-        st.error(f"Failed to load documents: {exc}")
+        st.error(t("data.load_failed", language, error=exc))
         return
 
     if not docs:
-        st.info(
-            "**No documents found in this collection.** "
-            "Use the Ingestion Manager page to upload and ingest files, "
-            "or select a different collection from the dropdown above."
-        )
+        st.info(t("data.no_documents", language))
         return
 
-    st.subheader(f"📄 Documents ({len(docs)})")
+    st.subheader(f"📄 {t('data.documents', language)} ({len(docs)})")
 
     for idx, doc in enumerate(docs):
         source_name = Path(doc["source_path"]).name
-        label = f"📑 {source_name}  —  {doc['chunk_count']} chunks · {doc['image_count']} images"
+        label = (
+            f"📑 {source_name}  —  "
+            f"{doc['chunk_count']} {t('data.chunks', language)} · "
+            f"{doc['image_count']} {t('data.images', language)}"
+        )
         with st.expander(label, expanded=(len(docs) == 1)):
             # ── Document metadata ──────────────────────────────────
             col_a, col_b, col_c = st.columns(3)
-            col_a.metric("Chunks", doc["chunk_count"])
-            col_b.metric("Images", doc["image_count"])
-            col_c.metric("Collection", doc.get("collection", "—"))
+            col_a.metric(t("data.chunks", language), doc["chunk_count"])
+            col_b.metric(t("data.images", language), doc["image_count"])
+            col_c.metric(t("data.collection", language), doc.get("collection", "—"))
             st.caption(
-                f"**Source:** {doc['source_path']}  ·  "
-                f"**Hash:** `{doc['source_hash'][:16]}…`  ·  "
-                f"**Processed:** {doc.get('processed_at', '—')}"
+                f"**{t('data.source', language)}:** {doc['source_path']}  ·  "
+                f"**{t('data.hash', language)}:** `{doc['source_hash'][:16]}…`  ·  "
+                f"**{t('data.processed', language)}:** {doc.get('processed_at', '—')}"
             )
 
             st.divider()
@@ -112,7 +125,7 @@ def render() -> None:
             # ── Chunk cards ────────────────────────────────────────
             chunks = svc.get_chunks(doc["source_hash"], coll_arg)
             if chunks:
-                st.markdown(f"### 📦 Chunks ({len(chunks)})")
+                st.markdown(f"### 📦 {t('data.chunks', language)} ({len(chunks)})")
                 for cidx, chunk in enumerate(chunks):
                     text = chunk.get("text", "")
                     meta = chunk.get("metadata", {})
@@ -127,13 +140,13 @@ def render() -> None:
 
                     with st.container(border=True):
                         st.markdown(
-                            f"**Chunk {cidx + 1}** · `{chunk_id[-16:]}` · "
+                            f"**{t('data.chunks', language)} {cidx + 1}** · `{chunk_id[-16:]}` · "
                             f"{len(text)} chars"
                         )
                         # Show the actual chunk text (scrollable)
                         _height = max(120, min(len(text) // 2, 600))
                         st.text_area(
-                            "Content",
+                            t("data.content", language),
                             value=text,
                             height=_height,
                             disabled=True,
@@ -141,16 +154,16 @@ def render() -> None:
                             label_visibility="collapsed",
                         )
                         # Expandable metadata
-                        with st.expander("📋 Metadata", expanded=False):
+                        with st.expander(f"📋 {t('data.metadata', language)}", expanded=False):
                             st.json(meta)
             else:
-                st.caption("No chunks found in vector store for this document.")
+                st.caption(t("data.no_chunks", language))
 
             # ── Image preview ──────────────────────────────────────
             images = svc.get_images(doc["source_hash"], coll_arg)
             if images:
                 st.divider()
-                st.markdown(f"### 🖼️ Images ({len(images)})")
+                st.markdown(f"### 🖼️ {t('data.images', language)} ({len(images)})")
                 img_cols = st.columns(min(len(images), 4))
                 for iidx, img in enumerate(images):
                     with img_cols[iidx % len(img_cols)]:
@@ -158,4 +171,6 @@ def render() -> None:
                         if img_path.exists():
                             st.image(str(img_path), caption=img["image_id"], width=200)
                         else:
-                            st.caption(f"{img['image_id']} (file missing)")
+                            st.caption(
+                                f"{img['image_id']} ({t('data.file_missing', language)})"
+                            )

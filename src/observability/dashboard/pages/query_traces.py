@@ -14,6 +14,8 @@ from typing import Any, Dict, List, Optional
 
 import streamlit as st
 
+from src.observability.dashboard.i18n import current_language
+from src.observability.dashboard.i18n import t as translate
 from src.observability.dashboard.services.trace_service import TraceService
 
 logger = logging.getLogger(__name__)
@@ -21,18 +23,19 @@ logger = logging.getLogger(__name__)
 
 def render() -> None:
     """Render the Query Traces page."""
-    st.header("🔎 Query Traces")
+    language = current_language()
+    st.header(f"🔎 {translate('trace.query.header', language)}")
 
     svc = TraceService()
     traces = svc.list_traces(trace_type="query")
 
     if not traces:
-        st.info("No query traces recorded yet. Run a query first!")
+        st.info(translate("trace.query.empty", language))
         return
 
     # ── Keyword filter ─────────────────────────────────────────────
     keyword = st.text_input(
-        "Search by query keyword",
+        translate("trace.query.search", language),
         value="",
         key="qt_keyword",
     )
@@ -45,10 +48,9 @@ def render() -> None:
             or kw in str(t.get("stages", [])).lower()
         ]
 
-    st.subheader(f"📋 Query History ({len(traces)})")
+    st.subheader(f"📋 {translate('trace.query.history', language)} ({len(traces)})")
 
     for idx, trace in enumerate(traces):
-        trace_id = trace.get("trace_id", "unknown")
         started = trace.get("started_at", "—")
         total_ms = trace.get("elapsed_ms")
         total_label = f"{total_ms:.0f} ms" if total_ms is not None else "—"
@@ -316,7 +318,7 @@ def _evaluate_single_trace(
     try:
         from dataclasses import replace as dc_replace
 
-        from src.core.settings import load_settings, EvaluationSettings
+        from src.core.settings import EvaluationSettings, load_settings
         from src.libs.evaluator.evaluator_factory import EvaluatorFactory
 
         settings = load_settings()
@@ -379,11 +381,11 @@ def _retrieve_chunks(
 ) -> list:
     """Re-run HybridSearch + Rerank to retrieve chunks for evaluation."""
     try:
+        from src.core.query_engine.dense_retriever import create_dense_retriever
         from src.core.query_engine.hybrid_search import create_hybrid_search
         from src.core.query_engine.query_processor import QueryProcessor
-        from src.core.query_engine.dense_retriever import create_dense_retriever
-        from src.core.query_engine.sparse_retriever import create_sparse_retriever
         from src.core.query_engine.reranker import create_core_reranker
+        from src.core.query_engine.sparse_retriever import create_sparse_retriever
         from src.ingestion.storage.bm25_indexer import BM25Indexer
         from src.libs.embedding.embedding_factory import EmbeddingFactory
         from src.libs.vector_store.vector_store_factory import VectorStoreFactory
