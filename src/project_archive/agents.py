@@ -45,7 +45,7 @@ class AgentWorkflow:
             entity.id
             for entity in self.entities
             if entity.type in self._ARCHITECTURE_TYPES
-        ]
+        ][:12]
         evidence_ids = self._first_evidence_ids()
 
         return AgentResult(

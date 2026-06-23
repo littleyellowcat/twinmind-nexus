@@ -61,3 +61,18 @@ def test_risk_audit_mentions_placeholder_entry_risk():
     assert result.mode == QueryMode.RISK_AUDIT
     assert result.risks
     assert "ev_main" in result.evidence_card_ids
+
+
+def test_architecture_tour_limits_affected_entities_to_first_twelve_matches():
+    entities = [
+        ProjectEntity(id=f"module_{index}", type="Module", name=f"Module{index}")
+        for index in range(13)
+    ]
+    entities.append(ProjectEntity(id="risk_main", type="Risk", name="Placeholder risk"))
+    workflow = AgentWorkflow(entities=entities, relations=[], evidence_cards=[])
+
+    result = workflow.run(question="Show me the architecture.", mode=QueryMode.ARCHITECTURE_TOUR)
+
+    assert result.mode == QueryMode.ARCHITECTURE_TOUR
+    assert result.affected_entities == [f"module_{index}" for index in range(12)]
+    assert len(result.affected_entities) == 12
