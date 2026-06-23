@@ -7,21 +7,29 @@ from pathlib import Path
 
 from src.project_archive.agents import AgentWorkflow
 from src.project_archive.archive_builder import ArchiveBuilder
-from src.project_archive.graph_store import SQLiteGraphStore
+from src.project_archive.graph_store import create_graph_store
 from src.project_archive.types import AgentResult, ProjectArchiveDraft, QueryMode
 
 
 class ProjectArchiveService:
     """Coordinate project archive persistence and deterministic query workflows."""
 
-    def __init__(self, storage_dir: Path | str = "data/project_archive") -> None:
+    def __init__(
+        self,
+        storage_dir: Path | str = "data/project_archive",
+        graph_provider: str = "sqlite",
+    ) -> None:
         self.storage_dir = Path(storage_dir)
+        self.graph_provider = graph_provider
         self.storage_dir.mkdir(parents=True, exist_ok=True)
 
     def ingest_project(
         self, project_root: Path | str, project_id: str
     ) -> ProjectArchiveDraft:
-        graph_store = SQLiteGraphStore(self._graph_path(project_id))
+        graph_store = create_graph_store(
+            path=self._graph_path(project_id),
+            preferred_provider=self.graph_provider,
+        )
         builder = ArchiveBuilder(graph_store=graph_store)
         draft = builder.build(project_root=project_root, project_id=project_id)
 
@@ -60,4 +68,6 @@ class ProjectArchiveService:
         return self._project_dir(project_id) / "draft_archive.json"
 
     def _graph_path(self, project_id: str) -> Path:
+        if self.graph_provider.lower() == "kuzu":
+            return self._project_dir(project_id) / "graph.kuzu"
         return self._project_dir(project_id) / "graph.sqlite"

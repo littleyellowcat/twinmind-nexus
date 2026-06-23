@@ -1,13 +1,13 @@
-"""Graph store contracts and SQLite fallback for project archives."""
+"""Graph store contracts and providers for project archives."""
 
 from __future__ import annotations
 
 import json
 import sqlite3
 from abc import ABC, abstractmethod
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator, Iterable, Optional
 
 from src.project_archive.types import (
     EvidenceCard,
@@ -33,19 +33,19 @@ class BaseGraphStore(ABC):
         """Insert or replace evidence cards."""
 
     @abstractmethod
-    def get_entity(self, entity_id: str) -> Optional[ProjectEntity]:
+    def get_entity(self, entity_id: str) -> ProjectEntity | None:
         """Return a project entity by id."""
 
     @abstractmethod
-    def list_entities(self, type: Optional[str] = None) -> list[ProjectEntity]:
+    def list_entities(self, type: str | None = None) -> list[ProjectEntity]:
         """List project entities, optionally filtered by type."""
 
     @abstractmethod
     def list_relations(
         self,
-        source_id: Optional[str] = None,
-        target_id: Optional[str] = None,
-        type: Optional[str] = None,
+        source_id: str | None = None,
+        target_id: str | None = None,
+        type: str | None = None,
     ) -> list[ProjectRelation]:
         """List project relations, optionally filtered by fields."""
 
@@ -149,7 +149,7 @@ class SQLiteGraphStore(BaseGraphStore):
                 rows,
             )
 
-    def get_entity(self, entity_id: str) -> Optional[ProjectEntity]:
+    def get_entity(self, entity_id: str) -> ProjectEntity | None:
         with self._connection() as conn:
             row = conn.execute(
                 """
@@ -161,7 +161,7 @@ class SQLiteGraphStore(BaseGraphStore):
             ).fetchone()
         return _entity_from_row(row) if row else None
 
-    def list_entities(self, type: Optional[str] = None) -> list[ProjectEntity]:
+    def list_entities(self, type: str | None = None) -> list[ProjectEntity]:
         sql = """
             SELECT id, type, name, source_path, properties_json, evidence_ids_json
             FROM entities
@@ -178,9 +178,9 @@ class SQLiteGraphStore(BaseGraphStore):
 
     def list_relations(
         self,
-        source_id: Optional[str] = None,
-        target_id: Optional[str] = None,
-        type: Optional[str] = None,
+        source_id: str | None = None,
+        target_id: str | None = None,
+        type: str | None = None,
     ) -> list[ProjectRelation]:
         sql = """
             SELECT id, source_id, target_id, type, evidence_ids_json, properties_json
@@ -288,47 +288,245 @@ class SQLiteGraphStore(BaseGraphStore):
 
 
 class KuzuGraphStore(BaseGraphStore):
-    """Placeholder for the Phase 1-disabled Kuzu graph store."""
+    """Kuzu-backed graph store for project archives."""
 
     def __init__(self, path: str | Path) -> None:
         try:
-            import kuzu  # noqa: F401
+            import kuzu
         except ImportError as exc:
             raise RuntimeError(
                 "Kuzu graph store requires the optional 'kuzu' package to be installed."
             ) from exc
-        raise RuntimeError(
-            "Kuzu graph store is not enabled in Phase 1; use provider='sqlite'."
-        )
+
+        self.path = Path(path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.database = kuzu.Database(str(self.path))
+        self.connection = kuzu.Connection(self.database)
+        self._initialize()
 
     def upsert_entities(self, entities: Iterable[ProjectEntity]) -> None:
-        raise NotImplementedError
+        for entity in entities:
+            self.connection.execute(
+                """
+                MERGE (entity:Entity {id: $id})
+                SET
+                    entity.type = $type,
+                    entity.name = $name,
+                    entity.source_path = $source_path,
+                    entity.properties_json = $properties_json,
+                    entity.evidence_ids_json = $evidence_ids_json
+                """,
+                {
+                    "id": entity.id,
+                    "type": entity.type,
+                    "name": entity.name,
+                    "source_path": entity.source_path,
+                    "properties_json": _json_dumps(entity.properties),
+                    "evidence_ids_json": _json_dumps(entity.evidence_ids),
+                },
+            )
 
     def upsert_relations(self, relations: Iterable[ProjectRelation]) -> None:
-        raise NotImplementedError
+        for relation in relations:
+            self.connection.execute(
+                """
+                MATCH (:Entity)-[relation:ArchiveRelation]->(:Entity)
+                WHERE relation.id = $id
+                DELETE relation
+                """,
+                {"id": relation.id},
+            )
+            self.connection.execute(
+                """
+                MATCH
+                    (source:Entity {id: $source_id}),
+                    (target:Entity {id: $target_id})
+                CREATE (source)-[:ArchiveRelation {
+                    id: $id,
+                    type: $type,
+                    evidence_ids_json: $evidence_ids_json,
+                    properties_json: $properties_json
+                }]->(target)
+                """,
+                {
+                    "id": relation.id,
+                    "source_id": relation.source_id,
+                    "target_id": relation.target_id,
+                    "type": relation.type,
+                    "evidence_ids_json": _json_dumps(relation.evidence_ids),
+                    "properties_json": _json_dumps(relation.properties),
+                },
+            )
 
     def upsert_evidence(self, evidence_cards: Iterable[EvidenceCard]) -> None:
-        raise NotImplementedError
+        for evidence in evidence_cards:
+            self.connection.execute(
+                """
+                MERGE (evidence:Evidence {id: $id})
+                SET evidence.payload_json = $payload_json
+                """,
+                {
+                    "id": evidence.id,
+                    "payload_json": _json_dumps(evidence.to_dict()),
+                },
+            )
 
-    def get_entity(self, entity_id: str) -> Optional[ProjectEntity]:
-        raise NotImplementedError
+    def get_entity(self, entity_id: str) -> ProjectEntity | None:
+        result = self.connection.execute(
+            """
+            MATCH (entity:Entity {id: $id})
+            RETURN
+                entity.id,
+                entity.type,
+                entity.name,
+                entity.source_path,
+                entity.properties_json,
+                entity.evidence_ids_json
+            """,
+            {"id": entity_id},
+        )
+        rows = list(result)
+        return _entity_from_kuzu_row(rows[0]) if rows else None
 
-    def list_entities(self, type: Optional[str] = None) -> list[ProjectEntity]:
-        raise NotImplementedError
+    def list_entities(self, type: str | None = None) -> list[ProjectEntity]:
+        if type is None:
+            result = self.connection.execute(
+                """
+                MATCH (entity:Entity)
+                RETURN
+                    entity.id,
+                    entity.type,
+                    entity.name,
+                    entity.source_path,
+                    entity.properties_json,
+                    entity.evidence_ids_json
+                ORDER BY entity.id
+                """
+            )
+        else:
+            result = self.connection.execute(
+                """
+                MATCH (entity:Entity)
+                WHERE entity.type = $type
+                RETURN
+                    entity.id,
+                    entity.type,
+                    entity.name,
+                    entity.source_path,
+                    entity.properties_json,
+                    entity.evidence_ids_json
+                ORDER BY entity.id
+                """,
+                {"type": type},
+            )
+        return [_entity_from_kuzu_row(row) for row in result]
 
     def list_relations(
         self,
-        source_id: Optional[str] = None,
-        target_id: Optional[str] = None,
-        type: Optional[str] = None,
+        source_id: str | None = None,
+        target_id: str | None = None,
+        type: str | None = None,
     ) -> list[ProjectRelation]:
-        raise NotImplementedError
+        filters = []
+        params = {}
+        if source_id is not None:
+            filters.append("source.id = $source_id")
+            params["source_id"] = source_id
+        if target_id is not None:
+            filters.append("target.id = $target_id")
+            params["target_id"] = target_id
+        if type is not None:
+            filters.append("relation.type = $type")
+            params["type"] = type
+
+        query = """
+            MATCH (source:Entity)-[relation:ArchiveRelation]->(target:Entity)
+        """
+        if filters:
+            query += " WHERE " + " AND ".join(filters)
+        query += """
+            RETURN
+                relation.id,
+                source.id,
+                target.id,
+                relation.type,
+                relation.evidence_ids_json,
+                relation.properties_json
+            ORDER BY relation.id
+        """
+
+        result = self.connection.execute(query, params)
+        return [_relation_from_kuzu_row(row) for row in result]
 
     def list_evidence(self) -> list[EvidenceCard]:
-        raise NotImplementedError
+        result = self.connection.execute(
+            """
+            MATCH (evidence:Evidence)
+            RETURN evidence.payload_json
+            ORDER BY evidence.id
+            """
+        )
+        return [EvidenceCard.from_dict(json.loads(row[0])) for row in result]
 
     def find_paths(self, source_name: str, target_name: str) -> list[GraphPath]:
-        raise NotImplementedError
+        result = self.connection.execute(
+            """
+            MATCH (source:Entity)-[relation:ArchiveRelation]->(target:Entity)
+            WHERE lower(source.name) = lower($source_name)
+              AND lower(target.name) = lower($target_name)
+            RETURN
+                source.id,
+                target.id,
+                relation.type,
+                relation.evidence_ids_json
+            ORDER BY relation.id
+            """,
+            {"source_name": source_name, "target_name": target_name},
+        )
+
+        return [
+            GraphPath(
+                nodes=[row[0], row[1]],
+                relations=[row[2]],
+                evidence_ids=json.loads(row[3]),
+            )
+            for row in result
+        ]
+
+    def _initialize(self) -> None:
+        self.connection.execute(
+            """
+            CREATE NODE TABLE IF NOT EXISTS Entity(
+                id STRING,
+                type STRING,
+                name STRING,
+                source_path STRING,
+                properties_json STRING,
+                evidence_ids_json STRING,
+                PRIMARY KEY(id)
+            )
+            """
+        )
+        self.connection.execute(
+            """
+            CREATE NODE TABLE IF NOT EXISTS Evidence(
+                id STRING,
+                payload_json STRING,
+                PRIMARY KEY(id)
+            )
+            """
+        )
+        self.connection.execute(
+            """
+            CREATE REL TABLE IF NOT EXISTS ArchiveRelation(
+                FROM Entity TO Entity,
+                id STRING,
+                type STRING,
+                evidence_ids_json STRING,
+                properties_json STRING
+            )
+            """
+        )
 
 
 class GraphStoreFactory:
@@ -342,6 +540,13 @@ class GraphStoreFactory:
         if normalized_provider == "kuzu":
             return KuzuGraphStore(path)
         raise ValueError(f"Unsupported graph store provider: {provider}")
+
+
+def create_graph_store(
+    path: str | Path, preferred_provider: str = "sqlite"
+) -> BaseGraphStore:
+    """Create a graph store for the requested provider."""
+    return GraphStoreFactory.create(provider=preferred_provider, path=path)
 
 
 def _json_dumps(value: object) -> str:
@@ -367,4 +572,26 @@ def _relation_from_row(row: sqlite3.Row) -> ProjectRelation:
         type=row["type"],
         evidence_ids=json.loads(row["evidence_ids_json"]),
         properties=json.loads(row["properties_json"]),
+    )
+
+
+def _entity_from_kuzu_row(row: list[object]) -> ProjectEntity:
+    return ProjectEntity(
+        id=str(row[0]),
+        type=str(row[1]),
+        name=str(row[2]),
+        source_path=str(row[3]) if row[3] is not None else None,
+        properties=json.loads(str(row[4])),
+        evidence_ids=json.loads(str(row[5])),
+    )
+
+
+def _relation_from_kuzu_row(row: list[object]) -> ProjectRelation:
+    return ProjectRelation(
+        id=str(row[0]),
+        source_id=str(row[1]),
+        target_id=str(row[2]),
+        type=str(row[3]),
+        evidence_ids=json.loads(str(row[4])),
+        properties=json.loads(str(row[5])),
     )
