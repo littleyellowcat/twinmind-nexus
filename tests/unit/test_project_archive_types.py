@@ -3,6 +3,7 @@ from src.project_archive.types import (
     ArchiveHall,
     EvidenceCard,
     GraphPath,
+    ProjectArchiveDraft,
     ProjectEntity,
     ProjectFile,
     ProjectRelation,
@@ -93,3 +94,45 @@ def test_project_file_carries_relative_path_and_language():
     assert file.path == "src/app.py"
     assert file.language == "python"
     assert file.metadata["size"] == 24
+
+
+def test_project_archive_draft_round_trip():
+    draft = ProjectArchiveDraft(
+        project_id="sample",
+        halls=[
+            ArchiveHall(
+                id="hall_architecture",
+                name="Architecture Hall",
+                description="Project structure",
+                entity_ids=["file_app"],
+            )
+        ],
+        entities=[
+            ProjectEntity(
+                id="file_app",
+                type="File",
+                name="src/app.py",
+                source_path="src/app.py",
+            )
+        ],
+        relations=[
+            ProjectRelation(
+                id="rel_app_run",
+                source_id="file_app",
+                target_id="fn_run",
+                type="DEFINES",
+            )
+        ],
+        evidence_cards=[
+            EvidenceCard(
+                id="ev_app",
+                source_type="code",
+                source_path="src/app.py",
+                title="Function: run",
+                snippet="def run():",
+            )
+        ],
+        confirmation_items=["Please review hall assignments."],
+    )
+
+    assert ProjectArchiveDraft.from_dict(draft.to_dict()) == draft

@@ -118,6 +118,34 @@ class ProjectFile:
 
 
 @dataclass(frozen=True)
+class ProjectArchiveDraft:
+    project_id: str
+    halls: List[ArchiveHall] = field(default_factory=list)
+    entities: List[ProjectEntity] = field(default_factory=list)
+    relations: List[ProjectRelation] = field(default_factory=list)
+    evidence_cards: List[EvidenceCard] = field(default_factory=list)
+    confirmation_items: List[str] = field(default_factory=list)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "ProjectArchiveDraft":
+        return cls(
+            project_id=data["project_id"],
+            halls=[ArchiveHall.from_dict(item) for item in data.get("halls", [])],
+            entities=[ProjectEntity.from_dict(item) for item in data.get("entities", [])],
+            relations=[
+                ProjectRelation.from_dict(item) for item in data.get("relations", [])
+            ],
+            evidence_cards=[
+                EvidenceCard.from_dict(item) for item in data.get("evidence_cards", [])
+            ],
+            confirmation_items=list(data.get("confirmation_items", [])),
+        )
+
+
+@dataclass(frozen=True)
 class AgentResult:
     mode: QueryMode
     question: str
