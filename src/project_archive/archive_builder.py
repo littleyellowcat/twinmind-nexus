@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable, Protocol, TypeVar
+from typing import Protocol, TypeVar
 
 from src.project_archive.adapters import (
     BaseLanguageAdapter,

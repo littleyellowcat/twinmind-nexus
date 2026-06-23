@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
-import tomllib
 from dataclasses import dataclass
 from typing import Any
 
+import tomllib
 import yaml
 
 from src.project_archive.adapters.base import AdapterExtraction, BaseLanguageAdapter

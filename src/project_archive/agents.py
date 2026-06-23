@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Iterable, List
+from collections.abc import Iterable
 
 from src.project_archive.types import (
     AgentResult,
@@ -23,9 +23,9 @@ class AgentWorkflow:
 
     def __init__(
         self,
-        entities: List[ProjectEntity],
-        relations: List[ProjectRelation],
-        evidence_cards: List[EvidenceCard],
+        entities: list[ProjectEntity],
+        relations: list[ProjectRelation],
+        evidence_cards: list[EvidenceCard],
     ) -> None:
         self.entities = list(entities)
         self.relations = list(relations)
@@ -140,12 +140,12 @@ class AgentWorkflow:
             confidence=0.65 if evidence_ids else 0.0,
         )
 
-    def _first_evidence_ids(self, limit: int = 3) -> List[str]:
+    def _first_evidence_ids(self, limit: int = 3) -> list[str]:
         return [card.id for card in self.evidence_cards[:limit]]
 
     @staticmethod
-    def _unique_ids(values: Iterable[str]) -> List[str]:
-        unique: List[str] = []
+    def _unique_ids(values: Iterable[str]) -> list[str]:
+        unique: list[str] = []
         seen: set[str] = set()
         for value in values:
             if value not in seen:

@@ -8,8 +8,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, Dict, Iterable, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from src.project_archive.service import ProjectArchiveService
 from src.project_archive.types import QueryMode
@@ -29,7 +30,7 @@ architecture_tour, impact_analysis, and risk_audit, returning summaries with
 entities, evidence cards, risks, and suggested next actions.
 """
 
-TOOL_INPUT_SCHEMA: Dict[str, Any] = {
+TOOL_INPUT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
         "project_id": {
@@ -73,7 +74,7 @@ class QueryProjectTwinTool:
         )
         return self._format_result(result)
 
-    def _format_result(self, result: "AgentResult") -> str:
+    def _format_result(self, result: AgentResult) -> str:
         return "\n".join(
             [
                 f"Mode: {result.mode.value}",
@@ -104,7 +105,7 @@ async def handle_tool(
     return await _tool.execute(project_id=project_id, question=question, mode=mode)
 
 
-def register_tool(protocol_handler: "ProtocolHandler") -> None:
+def register_tool(protocol_handler: ProtocolHandler) -> None:
     """Register query_project_twin with the protocol handler."""
     protocol_handler.register_tool(
         name=TOOL_NAME,

@@ -3,16 +3,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List
 
 from src.project_archive.types import EvidenceCard, ProjectEntity, ProjectFile, ProjectRelation
 
 
 @dataclass
 class AdapterExtraction:
-    entities: List[ProjectEntity] = field(default_factory=list)
-    relations: List[ProjectRelation] = field(default_factory=list)
-    evidence_cards: List[EvidenceCard] = field(default_factory=list)
+    entities: list[ProjectEntity] = field(default_factory=list)
+    relations: list[ProjectRelation] = field(default_factory=list)
+    evidence_cards: list[EvidenceCard] = field(default_factory=list)
 
 
 class BaseLanguageAdapter:

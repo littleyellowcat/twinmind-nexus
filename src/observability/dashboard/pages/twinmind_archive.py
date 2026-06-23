@@ -8,14 +8,14 @@ deterministic TwinMind agent workflows.
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, Iterable, List
+from typing import Any
 
 import streamlit as st
 
 from src.project_archive.service import ProjectArchiveService
 from src.project_archive.types import AgentResult, ProjectArchiveDraft, QueryMode
-
 
 ARCHIVE_STORAGE_DIR = Path("data/project_archive")
 
@@ -29,7 +29,7 @@ MODE_LABELS = {
 
 def _list_archived_project_ids(
     storage_dir: Path | str = ARCHIVE_STORAGE_DIR,
-) -> List[str]:
+) -> list[str]:
     """Return project IDs with a persisted draft archive."""
     root = Path(storage_dir)
     if not root.exists():

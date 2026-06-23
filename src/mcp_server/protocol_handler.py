@@ -8,8 +8,9 @@ This module provides the ProtocolHandler class that encapsulates:
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any
 
 from mcp import types
 from mcp.server.lowlevel import Server
@@ -34,7 +35,7 @@ class ToolDefinition:
 
     name: str
     description: str
-    input_schema: Dict[str, Any]
+    input_schema: dict[str, Any]
     handler: Callable[..., Any]
 
 
@@ -55,7 +56,7 @@ class ProtocolHandler:
 
     server_name: str
     server_version: str
-    tools: Dict[str, ToolDefinition] = field(default_factory=dict)
+    tools: dict[str, ToolDefinition] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         """Initialize logger after dataclass initialization."""
@@ -65,7 +66,7 @@ class ProtocolHandler:
         self,
         name: str,
         description: str,
-        input_schema: Dict[str, Any],
+        input_schema: dict[str, Any],
         handler: Callable[..., Any],
     ) -> None:
         """Register a tool with the protocol handler.
@@ -90,7 +91,7 @@ class ProtocolHandler:
         )
         self._logger.info("Registered tool: %s", name)
 
-    def get_tool_schemas(self) -> List[types.Tool]:
+    def get_tool_schemas(self) -> list[types.Tool]:
         """Get list of tool schemas for tools/list response.
 
         Returns:
@@ -106,7 +107,7 @@ class ProtocolHandler:
         ]
 
     async def execute_tool(
-        self, name: str, arguments: Dict[str, Any]
+        self, name: str, arguments: dict[str, Any]
     ) -> types.CallToolResult:
         """Execute a registered tool by name.
 
@@ -165,7 +166,7 @@ class ProtocolHandler:
                 ],
                 isError=True,
             )
-        except Exception as e:
+        except Exception:
             # Internal error - don't leak stack trace
             self._logger.exception("Internal error executing tool %s", name)
             return types.CallToolResult(
@@ -178,7 +179,7 @@ class ProtocolHandler:
                 isError=True,
             )
 
-    def get_capabilities(self) -> Dict[str, Any]:
+    def get_capabilities(self) -> dict[str, Any]:
         """Get server capabilities for initialize response.
 
         Returns:
@@ -214,18 +215,22 @@ def _register_default_tools(protocol_handler: ProtocolHandler) -> None:
     register_if_absent("get_document_summary", register_summary_tool)
 
     # Import and register ingest_project_archive tool
-    from src.mcp_server.tools.ingest_project_archive import register_tool as register_ingest_archive_tool
+    from src.mcp_server.tools.ingest_project_archive import (
+        register_tool as register_ingest_archive_tool,
+    )
     register_if_absent("ingest_project_archive", register_ingest_archive_tool)
 
     # Import and register query_project_twin tool
-    from src.mcp_server.tools.query_project_twin import register_tool as register_query_project_twin_tool
+    from src.mcp_server.tools.query_project_twin import (
+        register_tool as register_query_project_twin_tool,
+    )
     register_if_absent("query_project_twin", register_query_project_twin_tool)
 
 
 def create_mcp_server(
     server_name: str,
     server_version: str,
-    protocol_handler: Optional[ProtocolHandler] = None,
+    protocol_handler: ProtocolHandler | None = None,
     register_tools: bool = True,
 ) -> Server:
     """Create and configure an MCP server with the protocol handler.
@@ -259,14 +264,14 @@ def create_mcp_server(
 
     # Register tools/list handler
     @server.list_tools()
-    async def handle_list_tools() -> List[types.Tool]:
+    async def handle_list_tools() -> list[types.Tool]:
         """Handle tools/list request."""
         return protocol_handler.get_tool_schemas()
 
     # Register tools/call handler
     @server.call_tool()
     async def handle_call_tool(
-        name: str, arguments: Dict[str, Any]
+        name: str, arguments: dict[str, Any]
     ) -> types.CallToolResult:
         """Handle tools/call request."""
         return await protocol_handler.execute_tool(name, arguments)

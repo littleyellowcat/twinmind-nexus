@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable, List
 
 from src.project_archive.types import ProjectFile
 
@@ -56,8 +56,8 @@ class ProjectScanner:
         self.root = Path(root)
         self.ignore_dirs = set(ignore_dirs)
 
-    def scan(self) -> List[ProjectFile]:
-        files: List[ProjectFile] = []
+    def scan(self) -> list[ProjectFile]:
+        files: list[ProjectFile] = []
 
         for path in sorted(self.root.rglob("*")):
             if not path.is_file() or self._is_ignored(path):

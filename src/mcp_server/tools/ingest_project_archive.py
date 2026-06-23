@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from pathlib import Path
-from typing import Any, Dict, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from src.project_archive.service import ProjectArchiveService
 
@@ -27,7 +27,7 @@ relations, and evidence cards, then persists the archive under the supplied
 project_id for later query_project_twin calls.
 """
 
-TOOL_INPUT_SCHEMA: Dict[str, Any] = {
+TOOL_INPUT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
         "project_path": {
@@ -74,7 +74,7 @@ async def handle_tool(project_path: str, project_id: str) -> str:
     return await _tool.execute(project_path=project_path, project_id=project_id)
 
 
-def register_tool(protocol_handler: "ProtocolHandler") -> None:
+def register_tool(protocol_handler: ProtocolHandler) -> None:
     """Register ingest_project_archive with the protocol handler."""
     protocol_handler.register_tool(
         name=TOOL_NAME,

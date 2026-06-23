@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 
 class QueryMode(str, Enum):
@@ -23,17 +23,17 @@ class EvidenceCard:
     source_path: str
     title: str
     snippet: str
-    line_start: Optional[int] = None
-    line_end: Optional[int] = None
-    linked_entities: List[str] = field(default_factory=list)
+    line_start: int | None = None
+    line_end: int | None = None
+    linked_entities: list[str] = field(default_factory=list)
     confidence: float = 1.0
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "EvidenceCard":
+    def from_dict(cls, data: dict[str, Any]) -> EvidenceCard:
         return cls(**data)
 
 
@@ -42,15 +42,15 @@ class ProjectEntity:
     id: str
     type: str
     name: str
-    source_path: Optional[str] = None
-    properties: Dict[str, Any] = field(default_factory=dict)
-    evidence_ids: List[str] = field(default_factory=list)
+    source_path: str | None = None
+    properties: dict[str, Any] = field(default_factory=dict)
+    evidence_ids: list[str] = field(default_factory=list)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "ProjectEntity":
+    def from_dict(cls, data: dict[str, Any]) -> ProjectEntity:
         return cls(**data)
 
 
@@ -60,14 +60,14 @@ class ProjectRelation:
     source_id: str
     target_id: str
     type: str
-    evidence_ids: List[str] = field(default_factory=list)
-    properties: Dict[str, Any] = field(default_factory=dict)
+    evidence_ids: list[str] = field(default_factory=list)
+    properties: dict[str, Any] = field(default_factory=dict)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "ProjectRelation":
+    def from_dict(cls, data: dict[str, Any]) -> ProjectRelation:
         return cls(**data)
 
 
@@ -76,28 +76,28 @@ class ArchiveHall:
     id: str
     name: str
     description: str
-    entity_ids: List[str] = field(default_factory=list)
-    risk_ids: List[str] = field(default_factory=list)
+    entity_ids: list[str] = field(default_factory=list)
+    risk_ids: list[str] = field(default_factory=list)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "ArchiveHall":
+    def from_dict(cls, data: dict[str, Any]) -> ArchiveHall:
         return cls(**data)
 
 
 @dataclass(frozen=True)
 class GraphPath:
-    nodes: List[str]
-    relations: List[str] = field(default_factory=list)
-    evidence_ids: List[str] = field(default_factory=list)
+    nodes: list[str]
+    relations: list[str] = field(default_factory=list)
+    evidence_ids: list[str] = field(default_factory=list)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "GraphPath":
+    def from_dict(cls, data: dict[str, Any]) -> GraphPath:
         return cls(**data)
 
 
@@ -107,30 +107,30 @@ class ProjectFile:
     path: str
     language: str
     text: str
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "ProjectFile":
+    def from_dict(cls, data: dict[str, Any]) -> ProjectFile:
         return cls(**data)
 
 
 @dataclass(frozen=True)
 class ProjectArchiveDraft:
     project_id: str
-    halls: List[ArchiveHall] = field(default_factory=list)
-    entities: List[ProjectEntity] = field(default_factory=list)
-    relations: List[ProjectRelation] = field(default_factory=list)
-    evidence_cards: List[EvidenceCard] = field(default_factory=list)
-    confirmation_items: List[str] = field(default_factory=list)
+    halls: list[ArchiveHall] = field(default_factory=list)
+    entities: list[ProjectEntity] = field(default_factory=list)
+    relations: list[ProjectRelation] = field(default_factory=list)
+    evidence_cards: list[EvidenceCard] = field(default_factory=list)
+    confirmation_items: list[str] = field(default_factory=list)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "ProjectArchiveDraft":
+    def from_dict(cls, data: dict[str, Any]) -> ProjectArchiveDraft:
         return cls(
             project_id=data["project_id"],
             halls=[ArchiveHall.from_dict(item) for item in data.get("halls", [])],
@@ -150,21 +150,21 @@ class AgentResult:
     mode: QueryMode
     question: str
     summary: str
-    affected_entities: List[str] = field(default_factory=list)
-    graph_paths: List[GraphPath] = field(default_factory=list)
-    evidence_card_ids: List[str] = field(default_factory=list)
-    risks: List[str] = field(default_factory=list)
-    next_actions: List[str] = field(default_factory=list)
+    affected_entities: list[str] = field(default_factory=list)
+    graph_paths: list[GraphPath] = field(default_factory=list)
+    evidence_card_ids: list[str] = field(default_factory=list)
+    risks: list[str] = field(default_factory=list)
+    next_actions: list[str] = field(default_factory=list)
     confidence: float = 0.0
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
         data["mode"] = self.mode.value
         return data
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "AgentResult":
+    def from_dict(cls, data: dict[str, Any]) -> AgentResult:
         payload = dict(data)
         payload["mode"] = QueryMode(payload["mode"])
         payload["graph_paths"] = [
