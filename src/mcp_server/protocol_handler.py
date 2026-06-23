@@ -195,17 +195,31 @@ def _register_default_tools(protocol_handler: ProtocolHandler) -> None:
     Args:
         protocol_handler: ProtocolHandler instance to register tools with.
     """
+    def register_if_absent(name: str, register: Callable[[ProtocolHandler], None]) -> None:
+        if name in protocol_handler.tools:
+            protocol_handler._logger.info("Default tool already registered: %s", name)
+            return
+        register(protocol_handler)
+
     # Import and register query_knowledge_hub tool
     from src.mcp_server.tools.query_knowledge_hub import register_tool as register_query_tool
-    register_query_tool(protocol_handler)
-    
+    register_if_absent("query_knowledge_hub", register_query_tool)
+
     # Import and register list_collections tool
     from src.mcp_server.tools.list_collections import register_tool as register_list_tool
-    register_list_tool(protocol_handler)
-    
+    register_if_absent("list_collections", register_list_tool)
+
     # Import and register get_document_summary tool
     from src.mcp_server.tools.get_document_summary import register_tool as register_summary_tool
-    register_summary_tool(protocol_handler)
+    register_if_absent("get_document_summary", register_summary_tool)
+
+    # Import and register ingest_project_archive tool
+    from src.mcp_server.tools.ingest_project_archive import register_tool as register_ingest_archive_tool
+    register_if_absent("ingest_project_archive", register_ingest_archive_tool)
+
+    # Import and register query_project_twin tool
+    from src.mcp_server.tools.query_project_twin import register_tool as register_query_project_twin_tool
+    register_if_absent("query_project_twin", register_query_project_twin_tool)
 
 
 def create_mcp_server(
@@ -229,6 +243,7 @@ def create_mcp_server(
     Returns:
         Configured Server instance ready to run.
     """
+    created_protocol_handler = protocol_handler is None
     if protocol_handler is None:
         protocol_handler = ProtocolHandler(
             server_name=server_name,
@@ -236,7 +251,7 @@ def create_mcp_server(
         )
 
     # Register default tools if requested
-    if register_tools:
+    if register_tools and (created_protocol_handler or not protocol_handler.tools):
         _register_default_tools(protocol_handler)
 
     # Create low-level server
