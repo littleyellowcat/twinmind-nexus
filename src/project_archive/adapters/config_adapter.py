@@ -17,10 +17,47 @@ class ConfigAdapter(BaseLanguageAdapter):
     language = "config"
 
     def extract(self, project_file: ProjectFile) -> AdapterExtraction:
-        extraction = AdapterExtraction()
+        file_entity = ProjectEntity(
+            id=project_file.id,
+            type="File",
+            name=project_file.path,
+            source_path=project_file.path,
+            properties={"language": project_file.language},
+        )
+        extraction = AdapterExtraction(entities=[file_entity])
         parsed = _parse_config(project_file)
 
         if not isinstance(parsed, dict):
+            entity_id = _stable_id("config", project_file.path, "value")
+            evidence_id = _stable_id("ev", project_file.path, "value")
+            entity = ProjectEntity(
+                id=entity_id,
+                type="Config",
+                name="value",
+                source_path=project_file.path,
+                properties={"language": project_file.language},
+                evidence_ids=[evidence_id],
+            )
+            extraction.entities.append(entity)
+            extraction.relations.append(
+                ProjectRelation(
+                    id=_stable_id("rel", project_file.id, entity.id, "CONFIGURES"),
+                    source_id=project_file.id,
+                    target_id=entity.id,
+                    type="CONFIGURES",
+                    evidence_ids=[evidence_id],
+                )
+            )
+            extraction.evidence_cards.append(
+                EvidenceCard(
+                    id=evidence_id,
+                    source_type="config",
+                    source_path=project_file.path,
+                    title="Config: value",
+                    snippet=project_file.text[:500],
+                    linked_entities=[project_file.id, entity.id],
+                )
+            )
             return extraction
 
         for key in parsed:

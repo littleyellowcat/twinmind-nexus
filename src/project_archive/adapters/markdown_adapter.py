@@ -15,7 +15,14 @@ class MarkdownAdapter(BaseLanguageAdapter):
     language = "markdown"
 
     def extract(self, project_file: ProjectFile) -> AdapterExtraction:
-        extraction = AdapterExtraction()
+        file_entity = ProjectEntity(
+            id=project_file.id,
+            type="File",
+            name=project_file.path,
+            source_path=project_file.path,
+            properties={"language": project_file.language},
+        )
+        extraction = AdapterExtraction(entities=[file_entity])
 
         for line_number, line in enumerate(project_file.text.splitlines(), start=1):
             match = HEADING_RE.match(line)

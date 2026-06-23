@@ -42,7 +42,11 @@ def test_markdown_adapter_extracts_headings_as_concepts():
 
     result = MarkdownAdapter().extract(project_file)
 
-    assert {entity.name for entity in result.entities} == {"Project", "Architecture"}
+    assert {entity.name for entity in result.entities if entity.type == "Concept"} == {
+        "Project",
+        "Architecture",
+    }
+    assert any(entity.type == "File" and entity.name == "README.md" for entity in result.entities)
     assert result.evidence_cards[0].source_type == "markdown"
 
 
@@ -56,5 +60,10 @@ def test_config_adapter_extracts_top_level_config_keys():
 
     result = ConfigAdapter().extract(project_file)
 
-    assert {entity.name for entity in result.entities} >= {"mode", "retrieval"}
-    assert all(entity.type == "Config" for entity in result.entities)
+    config_entities = [entity for entity in result.entities if entity.type == "Config"]
+
+    assert {entity.name for entity in config_entities} >= {"mode", "retrieval"}
+    assert any(
+        entity.type == "File" and entity.name == "config/settings.yaml"
+        for entity in result.entities
+    )
