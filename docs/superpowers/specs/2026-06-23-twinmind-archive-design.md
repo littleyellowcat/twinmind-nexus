@@ -767,6 +767,98 @@ Scope:
 - Permissions.
 - Production graph deployment options.
 
+## Future Enhancements
+
+These ideas are not required for the MVP, but they capture the stronger version of the product that the architecture should leave room for.
+
+### React Archive Workspace
+
+Move the first Streamlit prototype into a richer React workspace when the core RAG, graph, and agent contracts are stable.
+
+Potential upgrades:
+
+- React-based archive shell with persistent project navigation.
+- React Flow or Cytoscape graph canvas for entity paths and module maps.
+- Resizable panels for halls, graph paths, evidence cards, and agent traces.
+- Inline correction UX for merging entities, deleting bad relations, and confirming low-confidence graph output.
+- Saved workspaces for different projects and query sessions.
+
+### Knowledge Metaverse Visual Layer
+
+Make the archive feel more spatial and memorable without weakening the evidence-first workflow.
+
+Potential upgrades:
+
+- 2.5D archive or museum layout where modules become halls and evidence becomes artifacts.
+- Three.js star map for cross-hall concepts, hidden dependencies, and multi-hop relationships.
+- Animated evidence paths that show how an answer travels through documents, code, graph nodes, and agents.
+- Agent exploration visualization, where Archivist, Cartographer, Detective, Skeptic, and Curator appear as roles moving through the knowledge space.
+- Saved exploration routes that users can replay, share, or compare across questions.
+
+### Autonomous Agent Loop
+
+The MVP should use deterministic workflows for reliability. A later version can add a more autonomous planning loop for deeper investigation.
+
+Potential upgrades:
+
+- Planner agent that decomposes complex questions into retrieval, graph, audit, and synthesis subtasks.
+- ReAct-style tool use for iterative evidence gathering.
+- LangGraph or a similar workflow engine if the internal orchestrator becomes too limited.
+- Agent memory for prior investigations, confirmed corrections, and recurring project risks.
+- Budget-aware execution so autonomous loops stop when evidence is weak or when confidence no longer improves.
+- Critic-and-retry loops where Skeptic can send weak conclusions back to Archivist or Detective for more evidence.
+
+### Neo4j Production Graph Mode
+
+Kuzu is the recommended local-first MVP graph backend. Neo4j should become the advanced graph mode.
+
+Potential upgrades:
+
+- `Neo4jGraphStore` adapter with Bolt connection settings.
+- Cypher-backed graph expansion for deeper dependency, impact, and risk queries.
+- Optional Neo4j Browser compatibility for graph inspection.
+- Migration or export path from Kuzu/SQLite graph stores to Neo4j.
+- Production deployment profile using Docker Compose.
+
+### Multimodal Evidence Expansion
+
+The first version focuses on code, Markdown, and config. Later versions should make visual and temporal project evidence first-class.
+
+Potential upgrades:
+
+- Architecture diagram ingestion with image captioning and entity linking.
+- Screenshot and UI state evidence cards.
+- PDF diagrams and tables linked to code and concepts.
+- Audio or meeting transcript ingestion for design discussions.
+- Commit, issue, PR, changelog, and task timeline extraction.
+- Visual contradiction detection, such as diagrams that describe flows not implemented in code.
+
+### Multi-Project Knowledge Universe
+
+Once single-project archives work, multiple project twins can form a larger knowledge universe.
+
+Potential upgrades:
+
+- Cross-project concept search.
+- Shared architecture pattern library.
+- Reusable risk and decision catalog.
+- Project-to-project comparison mode.
+- Organization-level star map showing common modules, repeated design decisions, and recurring risks.
+- Personal or team knowledge memory across projects.
+
+### Stronger Evaluation and Benchmarking
+
+The project should eventually measure whether the archive is actually useful, not just visually interesting.
+
+Potential upgrades:
+
+- Golden project-analysis question set.
+- Impact-analysis hit-rate against manually labeled affected modules.
+- Risk-audit benchmark with seeded documentation/code contradictions.
+- Evidence coverage score for every answer.
+- Graph quality metrics such as duplicate entity rate, unsupported relation rate, and correction rate.
+- Regression dashboard comparing different graph extraction prompts, graph stores, and retrieval strategies.
+
 ## Open Decisions
 
 These decisions are intentionally deferred until implementation planning:
@@ -776,4 +868,3 @@ These decisions are intentionally deferred until implementation planning:
 - Exact LLM prompt contracts for each agent.
 - Which source file extensions are included by default in the first scanner pass.
 - Whether MCP tools and Streamlit pages share one service layer or use separate orchestration wrappers.
-
