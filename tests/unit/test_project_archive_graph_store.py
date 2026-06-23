@@ -49,3 +49,50 @@ def test_graph_store_finds_paths_by_entity_names(tmp_path):
     assert len(paths) == 1
     assert paths[0].nodes == ["module_ingestion", "module_query"]
     assert paths[0].relations == ["AFFECTS"]
+
+
+def test_sqlite_graph_store_persists_between_instances(tmp_path):
+    db_path = tmp_path / "archive_graph.db"
+    first_store = SQLiteGraphStore(db_path)
+    entity = ProjectEntity(id="fn_run", type="Function", name="run", source_path="src/app.py")
+    relation = ProjectRelation(id="rel_1", source_id="file_app", target_id="fn_run", type="DEFINES")
+    evidence = EvidenceCard(
+        id="ev_1",
+        source_type="code",
+        source_path="src/app.py",
+        title="run",
+        snippet="def run():",
+    )
+
+    first_store.upsert_entities([entity])
+    first_store.upsert_relations([relation])
+    first_store.upsert_evidence([evidence])
+
+    second_store = SQLiteGraphStore(db_path)
+
+    assert second_store.get_entity("fn_run") == entity
+    assert second_store.list_relations(source_id="file_app") == [relation]
+    assert second_store.list_evidence() == [evidence]
+
+
+def test_graph_store_find_paths_matches_names_case_insensitively(tmp_path):
+    store = SQLiteGraphStore(tmp_path / "archive_graph.db")
+    source = ProjectEntity(id="module_ingestion", type="Module", name="Ingestion")
+    target = ProjectEntity(id="module_query", type="Module", name="Query")
+    relation = ProjectRelation(
+        id="rel_affects",
+        source_id="module_ingestion",
+        target_id="module_query",
+        type="AFFECTS",
+        evidence_ids=["ev_1"],
+    )
+
+    store.upsert_entities([source, target])
+    store.upsert_relations([relation])
+
+    paths = store.find_paths("ingestion", "qUeRy")
+
+    assert len(paths) == 1
+    assert paths[0].nodes == ["module_ingestion", "module_query"]
+    assert paths[0].relations == ["AFFECTS"]
+    assert paths[0].evidence_ids == ["ev_1"]

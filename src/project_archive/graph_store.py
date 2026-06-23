@@ -5,8 +5,9 @@ from __future__ import annotations
 import json
 import sqlite3
 from abc import ABC, abstractmethod
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Iterator, Iterable, Optional
 
 from src.project_archive.types import (
     EvidenceCard,
@@ -80,7 +81,7 @@ class SQLiteGraphStore(BaseGraphStore):
         if not rows:
             return
 
-        with self._connect() as conn:
+        with self._connection() as conn:
             conn.executemany(
                 """
                 INSERT INTO entities (
@@ -112,7 +113,7 @@ class SQLiteGraphStore(BaseGraphStore):
         if not rows:
             return
 
-        with self._connect() as conn:
+        with self._connection() as conn:
             conn.executemany(
                 """
                 INSERT INTO relations (
@@ -137,7 +138,7 @@ class SQLiteGraphStore(BaseGraphStore):
         if not rows:
             return
 
-        with self._connect() as conn:
+        with self._connection() as conn:
             conn.executemany(
                 """
                 INSERT INTO evidence (id, payload_json)
@@ -149,7 +150,7 @@ class SQLiteGraphStore(BaseGraphStore):
             )
 
     def get_entity(self, entity_id: str) -> Optional[ProjectEntity]:
-        with self._connect() as conn:
+        with self._connection() as conn:
             row = conn.execute(
                 """
                 SELECT id, type, name, source_path, properties_json, evidence_ids_json
@@ -171,7 +172,7 @@ class SQLiteGraphStore(BaseGraphStore):
             params.append(type)
         sql += " ORDER BY id"
 
-        with self._connect() as conn:
+        with self._connection() as conn:
             rows = conn.execute(sql, params).fetchall()
         return [_entity_from_row(row) for row in rows]
 
@@ -200,12 +201,12 @@ class SQLiteGraphStore(BaseGraphStore):
             sql += " WHERE " + " AND ".join(filters)
         sql += " ORDER BY id"
 
-        with self._connect() as conn:
+        with self._connection() as conn:
             rows = conn.execute(sql, params).fetchall()
         return [_relation_from_row(row) for row in rows]
 
     def list_evidence(self) -> list[EvidenceCard]:
-        with self._connect() as conn:
+        with self._connection() as conn:
             rows = conn.execute(
                 "SELECT payload_json FROM evidence ORDER BY id"
             ).fetchall()
@@ -215,7 +216,7 @@ class SQLiteGraphStore(BaseGraphStore):
         ]
 
     def find_paths(self, source_name: str, target_name: str) -> list[GraphPath]:
-        with self._connect() as conn:
+        with self._connection() as conn:
             rows = conn.execute(
                 """
                 SELECT
@@ -243,7 +244,7 @@ class SQLiteGraphStore(BaseGraphStore):
         ]
 
     def _initialize(self) -> None:
-        with self._connect() as conn:
+        with self._connection() as conn:
             conn.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS entities (
@@ -275,6 +276,15 @@ class SQLiteGraphStore(BaseGraphStore):
         conn = sqlite3.connect(self.path)
         conn.row_factory = sqlite3.Row
         return conn
+
+    @contextmanager
+    def _connection(self) -> Iterator[sqlite3.Connection]:
+        conn = self._connect()
+        try:
+            with conn:
+                yield conn
+        finally:
+            conn.close()
 
 
 class KuzuGraphStore(BaseGraphStore):
