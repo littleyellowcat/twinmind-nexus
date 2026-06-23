@@ -105,6 +105,26 @@ def test_format_agent_result_includes_sections() -> None:
     assert "- Check affected callers." in formatted
 
 
+def test_format_agent_result_supports_chinese_labels() -> None:
+    from src.observability.dashboard.pages import twinmind_archive as page
+
+    result = AgentResult(
+        mode=QueryMode.RISK_AUDIT,
+        question="有哪些风险？",
+        summary="Risk audit found no placeholder evidence.",
+        risks=["Review stale docs."],
+        next_actions=["Open evidence."],
+        confidence=0.5,
+    )
+
+    formatted = page._format_agent_result(result, language="zh")
+
+    assert "模式: 风险审计" in formatted
+    assert "置信度: 0.50" in formatted
+    assert "风险:" in formatted
+    assert "下一步行动:" in formatted
+
+
 def test_draft_fixture_round_trip_matches_dashboard_expectation(tmp_path: Path) -> None:
     draft = _sample_draft()
     archive_dir = tmp_path / draft.project_id
