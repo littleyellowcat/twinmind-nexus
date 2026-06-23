@@ -44,6 +44,11 @@ def _page_evaluation_panel() -> None:
     render()
 
 
+def _page_twinmind_archive() -> None:
+    from src.observability.dashboard.pages.twinmind_archive import render
+    render()
+
+
 # ── Navigation ───────────────────────────────────────────────────────
 
 pages = [
@@ -53,6 +58,7 @@ pages = [
     st.Page(_page_ingestion_traces, title="Ingestion Traces", icon="🔬"),
     st.Page(_page_query_traces, title="Query Traces", icon="🔎"),
     st.Page(_page_evaluation_panel, title="Evaluation Panel", icon="📏"),
+    st.Page(_page_twinmind_archive, title="TwinMind Archive", icon="🗂️"),
 ]
 
 
