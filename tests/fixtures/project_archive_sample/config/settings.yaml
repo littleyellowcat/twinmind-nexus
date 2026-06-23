@@ -1,0 +1,3 @@
+mode: demo
+retrieval:
+  top_k: 5
