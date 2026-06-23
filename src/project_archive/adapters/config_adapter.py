@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import tomllib
+from dataclasses import dataclass
 from typing import Any
 
 import yaml
@@ -26,6 +27,21 @@ class ConfigAdapter(BaseLanguageAdapter):
         )
         extraction = AdapterExtraction(entities=[file_entity])
         parsed = _parse_config(project_file)
+
+        if isinstance(parsed, ParseError):
+            extraction.evidence_cards.append(
+                EvidenceCard(
+                    id=_stable_id("ev", project_file.path, "parse_error"),
+                    source_type="config",
+                    source_path=project_file.path,
+                    title="Config parse error",
+                    snippet=project_file.text[:500],
+                    linked_entities=[project_file.id],
+                    confidence=0.0,
+                    metadata={"error": parsed.message},
+                )
+            )
+            return extraction
 
         if not isinstance(parsed, dict):
             entity_id = _stable_id("config", project_file.path, "value")
@@ -96,13 +112,21 @@ class ConfigAdapter(BaseLanguageAdapter):
         return extraction
 
 
+@dataclass(frozen=True)
+class ParseError:
+    message: str
+
+
 def _parse_config(project_file: ProjectFile) -> Any:
-    if project_file.language == "toml":
-        return tomllib.loads(project_file.text)
-    if project_file.language == "json":
-        return json.loads(project_file.text)
-    if project_file.language == "yaml":
-        return yaml.safe_load(project_file.text)
+    try:
+        if project_file.language == "toml":
+            return tomllib.loads(project_file.text)
+        if project_file.language == "json":
+            return json.loads(project_file.text)
+        if project_file.language == "yaml":
+            return yaml.safe_load(project_file.text)
+    except (json.JSONDecodeError, tomllib.TOMLDecodeError, yaml.YAMLError) as error:
+        return ParseError(message=str(error))
     return {}
 
 

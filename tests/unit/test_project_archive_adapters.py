@@ -67,3 +67,20 @@ def test_config_adapter_extracts_top_level_config_keys():
         entity.type == "File" and entity.name == "config/settings.yaml"
         for entity in result.entities
     )
+
+
+def test_config_adapter_returns_file_entity_for_malformed_config():
+    project_file = ProjectFile(
+        id="file_settings",
+        path="config/settings.yaml",
+        language="yaml",
+        text="mode: [demo\n",
+    )
+
+    result = ConfigAdapter().extract(project_file)
+
+    assert any(
+        entity.type == "File" and entity.name == "config/settings.yaml"
+        for entity in result.entities
+    )
+    assert [entity for entity in result.entities if entity.type == "Config"] == []

@@ -27,3 +27,15 @@ def test_scanner_assigns_languages_from_extensions():
     assert files["README.md"].language == "markdown"
     assert files["pyproject.toml"].language == "toml"
     assert files["config/settings.yaml"].language == "yaml"
+
+
+def test_scanner_skips_binary_files_that_decode_as_utf8(tmp_path):
+    (tmp_path / "README.md").write_text("# Project\n", encoding="utf-8")
+    (tmp_path / "payload.txt").write_bytes(b"text before\0text after")
+
+    scanner = ProjectScanner(root=tmp_path)
+
+    paths = {file.path for file in scanner.scan()}
+
+    assert "README.md" in paths
+    assert "payload.txt" not in paths

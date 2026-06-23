@@ -41,6 +41,8 @@ LANGUAGE_BY_SUFFIX = {
 }
 
 MAX_GENERIC_FILE_BYTES = 200_000
+BINARY_SAMPLE_BYTES = 4096
+BINARY_CONTROL_RATIO = 0.30
 
 
 class ProjectScanner:
@@ -73,6 +75,8 @@ class ProjectScanner:
                 continue
 
             try:
+                if _looks_binary(path):
+                    continue
                 text = path.read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError):
                 continue
@@ -100,3 +104,19 @@ class ProjectScanner:
 def _stable_file_id(relative_path: str) -> str:
     digest = hashlib.sha1(relative_path.encode("utf-8")).hexdigest()[:12]
     return f"file_{digest}"
+
+
+def _looks_binary(path: Path) -> bool:
+    with path.open("rb") as handle:
+        sample = handle.read(BINARY_SAMPLE_BYTES)
+    if not sample:
+        return False
+    if b"\0" in sample:
+        return True
+
+    control_bytes = sum(
+        1
+        for byte in sample
+        if byte < 32 and byte not in (9, 10, 12, 13)
+    )
+    return control_bytes / len(sample) > BINARY_CONTROL_RATIO
