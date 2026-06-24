@@ -160,6 +160,25 @@ def test_get_graph_neighborhood_filters_by_hall(tmp_path: Path) -> None:
     assert payload["is_sparse"] is False
 
 
+def test_get_graph_neighborhood_binds_repeated_relation_types(
+    tmp_path: Path,
+) -> None:
+    client = _client(tmp_path)
+
+    response = client.get(
+        "/api/archives/sample/graph/neighborhood",
+        params=[
+            ("hall_id", "hall_architecture"),
+            ("relation_types", "defines"),
+            ("relation_types", "configures"),
+        ],
+    )
+
+    assert response.status_code == 200
+    relation_ids = {relation["id"] for relation in response.json()["relations"]}
+    assert "rel:defines" in relation_ids
+
+
 def test_get_graph_neighborhood_returns_404_for_unknown_archive(
     tmp_path: Path,
 ) -> None:
