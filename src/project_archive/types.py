@@ -363,3 +363,93 @@ class GraphNeighborhood:
             is_sparse=bool(data.get("is_sparse", False)),
             sparse_reason=data.get("sparse_reason"),
         )
+
+
+@dataclass(frozen=True)
+class MissionGraphOverlay:
+    mission_id: str
+    explored_node_ids: list[str] = field(default_factory=list)
+    explored_relation_ids: list[str] = field(default_factory=list)
+    risk_node_ids: list[str] = field(default_factory=list)
+    risk_relation_ids: list[str] = field(default_factory=list)
+    annotations: list[dict[str, Any]] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> MissionGraphOverlay:
+        return cls(**data)
+
+
+@dataclass(frozen=True)
+class MissionTask:
+    id: str
+    mission_id: str
+    status: str
+    agent: str
+    task_type: str
+    title: str
+    input_entity_ids: list[str] = field(default_factory=list)
+    input_relation_ids: list[str] = field(default_factory=list)
+    evidence_ids: list[str] = field(default_factory=list)
+    findings: list[dict[str, Any]] = field(default_factory=list)
+    risks: list[dict[str, Any]] = field(default_factory=list)
+    confidence: float = 0.0
+    verifier_status: str = "uncertain"
+    created_at: str = ""
+    completed_at: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> MissionTask:
+        return cls(**data)
+
+
+@dataclass(frozen=True)
+class AutonomousMission:
+    id: str
+    project_id: str
+    goal: str
+    status: str
+    max_steps: int
+    stop_reason: str
+    created_at: str
+    completed_at: str
+    tasks: list[MissionTask] = field(default_factory=list)
+    graph_overlay: MissionGraphOverlay | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "project_id": self.project_id,
+            "goal": self.goal,
+            "status": self.status,
+            "max_steps": self.max_steps,
+            "stop_reason": self.stop_reason,
+            "created_at": self.created_at,
+            "completed_at": self.completed_at,
+            "tasks": [task.to_dict() for task in self.tasks],
+            "graph_overlay": self.graph_overlay.to_dict()
+            if self.graph_overlay
+            else None,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> AutonomousMission:
+        return cls(
+            id=data["id"],
+            project_id=data["project_id"],
+            goal=data["goal"],
+            status=data["status"],
+            max_steps=int(data["max_steps"]),
+            stop_reason=data.get("stop_reason", ""),
+            created_at=data.get("created_at", ""),
+            completed_at=data.get("completed_at", ""),
+            tasks=[MissionTask.from_dict(task) for task in data.get("tasks", [])],
+            graph_overlay=MissionGraphOverlay.from_dict(data["graph_overlay"])
+            if data.get("graph_overlay")
+            else None,
+        )
