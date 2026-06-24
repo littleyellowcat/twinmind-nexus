@@ -1121,7 +1121,8 @@ function GraphExplorerPage({
   const [isRightOpen, setIsRightOpen] = useState(true);
   const [isSummaryLoading, setIsSummaryLoading] = useState(false);
   const [isNeighborhoodLoading, setIsNeighborhoodLoading] = useState(false);
-  const [error, setError] = useState("");
+  const [summaryError, setSummaryError] = useState("");
+  const [neighborhoodError, setNeighborhoodError] = useState("");
 
   useEffect(() => {
     setSelectedHallId(archiveDraft.halls[0]?.id ?? null);
@@ -1138,12 +1139,12 @@ function GraphExplorerPage({
       .then((nextSummary) => {
         if (!isMounted) return;
         setSummary(nextSummary);
-        setError("");
+        setSummaryError("");
       })
       .catch((nextError) => {
         if (!isMounted) return;
         setSummary(null);
-        setError(nextError instanceof Error ? nextError.message : String(nextError));
+        setSummaryError(nextError instanceof Error ? nextError.message : String(nextError));
       })
       .finally(() => {
         if (isMounted) setIsSummaryLoading(false);
@@ -1169,12 +1170,12 @@ function GraphExplorerPage({
       .then((nextNeighborhood) => {
         if (!isMounted) return;
         setNeighborhood(nextNeighborhood);
-        setError("");
+        setNeighborhoodError("");
       })
       .catch((nextError) => {
         if (!isMounted) return;
         setNeighborhood(null);
-        setError(nextError instanceof Error ? nextError.message : String(nextError));
+        setNeighborhoodError(nextError instanceof Error ? nextError.message : String(nextError));
       })
       .finally(() => {
         if (isMounted) setIsNeighborhoodLoading(false);
@@ -1195,8 +1196,9 @@ function GraphExplorerPage({
   );
   const visibleNodeCount = neighborhood?.nodes.length ?? 0;
   const visibleRelationCount = neighborhood?.relations.length ?? 0;
-  const statusText = error
-    ? error
+  const visibleError = neighborhoodError || summaryError;
+  const statusText = visibleError
+    ? visibleError
     : locale === "zh"
       ? `显示 ${formatNumber(visibleNodeCount)} 个节点 / ${formatNumber(visibleRelationCount)} 条关系`
       : `Showing ${formatNumber(visibleNodeCount)} nodes / ${formatNumber(visibleRelationCount)} relations`;
@@ -1304,7 +1306,7 @@ function GraphExplorerPage({
           />
         ) : null}
       </div>
-      <div className={`graph-explorer-status ${error ? "is-error" : ""}`} role="status">
+      <div className={`graph-explorer-status ${visibleError ? "is-error" : ""}`} role="status">
         {statusText}
       </div>
     </section>
