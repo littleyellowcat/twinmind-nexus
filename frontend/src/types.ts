@@ -175,7 +175,7 @@ export type GraphNeighborhood = {
   relations: GraphExplorerRelation[];
   evidence_ids: string[];
   is_sparse: boolean;
-  sparse_reason: string;
+  sparse_reason: string | null;
 };
 
 export type MissionGraphOverlay = {
