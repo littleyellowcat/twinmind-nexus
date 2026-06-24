@@ -15,7 +15,6 @@ from src.project_archive.types import (
     RecommendedGraphStart,
 )
 
-
 ENTRY_FILE_NAMES = {"main.py", "app.py", "server.py", "cli.py", "index.js", "index.ts"}
 CONFIG_NAMES = {"llm", "retrieval", "vector_store", "embedding", "database", "agent"}
 DOCUMENT_TYPE_NAMES = {"doc", "document", "markdown", "readme", "md", "rst"}

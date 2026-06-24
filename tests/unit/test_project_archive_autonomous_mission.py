@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-from tests.unit.test_project_archive_graph_explorer import _draft
-
 from src.project_archive.autonomous_mission import TASK_SPECS, run_architecture_mission
 from src.project_archive.types import ProjectArchiveDraft, ProjectEntity, ProjectRelation
+from tests.unit.test_project_archive_graph_explorer import _draft
 
 
 def test_architecture_mission_runs_bounded_task_queue() -> None:

@@ -2189,6 +2189,7 @@ export function App() {
   const activeProjectIdRef = useRef(archiveDraft.projectId);
   const activeMissionIdRef = useRef<string | null>(null);
   const missionActionRef = useRef<MissionAction>(null);
+  const missionActionTokenRef = useRef(0);
 
   useEffect(() => {
     activeProjectIdRef.current = archiveDraft.projectId;
@@ -2271,6 +2272,7 @@ export function App() {
   const resetArchiveView = (draft: ArchiveDraft, report: ProjectAgentReport | null = null) => {
     activeProjectIdRef.current = draft.projectId;
     activeMissionIdRef.current = null;
+    missionActionTokenRef.current += 1;
     missionActionRef.current = null;
     setArchiveDraft(draft);
     setAgentReport(report);
@@ -2402,24 +2404,28 @@ export function App() {
 
   const handleStartMission = async () => {
     if (missionActionRef.current) return;
+    const token = missionActionTokenRef.current + 1;
+    missionActionTokenRef.current = token;
+    const requestedProjectId = archiveDraft.projectId;
     missionActionRef.current = "start";
     setMissionAction("start");
     activeMissionIdRef.current = null;
     setMissionOverlay(null);
     setMissionError("");
     try {
-      const nextMission = await startArchitectureMission(archiveDraft.projectId, 12);
-      if (nextMission.project_id !== activeProjectIdRef.current) return;
+      const nextMission = await startArchitectureMission(requestedProjectId, 12);
+      if (missionActionTokenRef.current !== token || nextMission.project_id !== activeProjectIdRef.current) return;
       activeMissionIdRef.current = nextMission.id;
       setMission(nextMission);
       await refreshMissionOverlay(nextMission);
       notify(String(copy[locale].missionReady));
     } catch (error) {
+      if (missionActionTokenRef.current !== token || requestedProjectId !== activeProjectIdRef.current) return;
       const message = error instanceof Error ? error.message : String(error);
       setMissionError(message);
       notify(`${copy[locale].missionError}: ${message}`);
     } finally {
-      if (missionActionRef.current === "start") {
+      if (missionActionTokenRef.current === token) {
         missionActionRef.current = null;
         setMissionAction(null);
       }
@@ -2431,21 +2437,26 @@ export function App() {
     if (action === "pause" && (isMissionTerminal(mission) || mission.status === "paused")) return;
     if (action === "resume" && mission.status !== "paused") return;
     if (action === "stop" && isMissionTerminal(mission)) return;
+    const token = missionActionTokenRef.current + 1;
+    missionActionTokenRef.current = token;
+    const requestedProjectId = archiveDraft.projectId;
+    const requestedMissionId = mission.id;
     missionActionRef.current = action;
     setMissionAction(action);
     setMissionError("");
     try {
-      const nextMission = await updateMissionStatus(mission.id, action);
-      if (nextMission.project_id !== activeProjectIdRef.current) return;
+      const nextMission = await updateMissionStatus(requestedMissionId, action);
+      if (missionActionTokenRef.current !== token || nextMission.project_id !== activeProjectIdRef.current) return;
       activeMissionIdRef.current = nextMission.id;
       setMission(nextMission);
       await refreshMissionOverlay(nextMission);
     } catch (error) {
+      if (missionActionTokenRef.current !== token || requestedProjectId !== activeProjectIdRef.current) return;
       const message = error instanceof Error ? error.message : String(error);
       setMissionError(message);
       notify(`${copy[locale].missionError}: ${message}`);
     } finally {
-      if (missionActionRef.current === action) {
+      if (missionActionTokenRef.current === token) {
         missionActionRef.current = null;
         setMissionAction(null);
       }

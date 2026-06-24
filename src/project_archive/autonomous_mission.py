@@ -17,7 +17,6 @@ from src.project_archive.types import (
     ProjectRelation,
 )
 
-
 ARCHITECTURE_GOAL = "understand_project_architecture"
 CONFIG_NAMES = {"llm", "retrieval", "vector_store", "embedding"}
 
