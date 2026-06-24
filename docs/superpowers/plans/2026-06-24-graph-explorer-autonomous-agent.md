@@ -2394,7 +2394,7 @@ git commit -m "feat: add mission playback to graph explorer"
 **Files:**
 - Modify only files that fail verification from Tasks 1-8.
 
-- [ ] **Step 1: Run backend unit and integration tests**
+- [x] **Step 1: Run backend unit and integration tests**
 
 Run:
 
@@ -2404,7 +2404,15 @@ pytest tests/unit/test_project_archive_graph_explorer.py tests/unit/test_project
 
 Expected: PASS.
 
-- [ ] **Step 2: Run backend lint on touched Python files**
+Verified on 2026-06-24 with:
+
+```bash
+.venv/bin/python -m pytest tests/unit/test_project_archive_api.py tests/unit/test_project_archive_autonomous_mission.py tests/unit/test_project_archive_graph_explorer.py -v
+```
+
+Result: PASS, 36 passed, 1 Starlette/httpx deprecation warning.
+
+- [x] **Step 2: Run backend lint on touched Python files**
 
 Run:
 
@@ -2414,7 +2422,15 @@ ruff check src/project_archive/types.py src/project_archive/graph_explorer.py sr
 
 Expected: PASS.
 
-- [ ] **Step 3: Run frontend build**
+Verified on 2026-06-24 with:
+
+```bash
+.venv/bin/python -m ruff check src/project_archive/service.py src/project_archive/api.py src/project_archive/autonomous_mission.py src/project_archive/graph_explorer.py tests/unit/test_project_archive_api.py tests/unit/test_project_archive_autonomous_mission.py tests/unit/test_project_archive_graph_explorer.py
+```
+
+Result: PASS.
+
+- [x] **Step 3: Run frontend build**
 
 Run:
 
@@ -2424,7 +2440,15 @@ cd frontend && npm run build
 
 Expected: PASS.
 
-- [ ] **Step 4: Start or verify backend**
+Verified on 2026-06-24 with:
+
+```bash
+cd frontend && npm run build
+```
+
+Result: PASS.
+
+- [x] **Step 4: Start or verify backend**
 
 Run:
 
@@ -2450,7 +2474,19 @@ Then run:
 .venv/bin/python -m uvicorn src.project_archive.api:app --host 127.0.0.1 --port 8000
 ```
 
-- [ ] **Step 5: Verify frontend manually**
+Verified on 2026-06-24: port 8000 was occupied by another service, so TwinMind API was started on `127.0.0.1:8010`. Health returned:
+
+```json
+{"status":"ok"}
+```
+
+Frontend was started with:
+
+```bash
+VITE_TWINMIND_API_URL=http://127.0.0.1:8010 npm run dev -- --port 5174
+```
+
+- [x] **Step 5: Verify frontend manually**
 
 Run frontend if it is not already running:
 
@@ -2471,7 +2507,16 @@ Open `http://127.0.0.1:5173` and verify:
 - Mission overlay marks explored entities and relations.
 - Pause, resume, and stop controls update status.
 
-- [ ] **Step 6: Capture Playwright screenshot**
+Verified on 2026-06-24 with Playwright CLI using Microsoft Edge:
+
+- Real archive loaded, not fallback.
+- Model status showed `deepseek · deepseek-v4-pro`.
+- Graph Explorer loaded real recommended starts and a real neighborhood.
+- Autonomous mission generated 9/9 completed tasks with evidence/entity counts and verifier status.
+- Graph Explorer showed `任务覆盖层: 29 / 风险高亮: 0`.
+- Latest console log had no CORS errors and no duplicate React key warnings.
+
+- [x] **Step 6: Capture Playwright screenshot**
 
 Run:
 
@@ -2485,7 +2530,13 @@ rm -rf .playwright-cli
 
 Expected: screenshot exists at `output/playwright/twinmind-graph-explorer-autonomous-agent.png`.
 
-- [ ] **Step 7: Commit verification fixes**
+Verified on 2026-06-24. Screenshot created at:
+
+```bash
+output/playwright/twinmind-graph-explorer-autonomous-agent.png
+```
+
+- [x] **Step 7: Commit verification fixes**
 
 If verification required code changes, commit only those fixes:
 
@@ -2495,3 +2546,8 @@ git commit -m "fix: polish graph explorer autonomous mission"
 ```
 
 If no verification fixes were required, do not create an empty commit.
+
+Verification found and fixed:
+
+- CORS only allowed the default Vite port; local dev now supports alternate localhost ports.
+- Graph Explorer could receive duplicate node/recommendation ids; rendering now de-duplicates nodes/relations and uses stable composite keys.
