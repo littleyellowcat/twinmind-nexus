@@ -10,6 +10,7 @@ import {
   GitBranch,
   Layers3,
   Network,
+  PanelLeft,
   PanelRight,
   Search,
   ShieldCheck,
@@ -17,11 +18,13 @@ import {
   Upload,
   X,
 } from "lucide-react";
-import type { ReactNode } from "react";
+import type { KeyboardEvent, ReactNode } from "react";
 import { useEffect, useMemo, useState } from "react";
 import {
   fetchAgentStatus,
   fetchArchiveDraft,
+  fetchGraphNeighborhood,
+  fetchGraphSummary,
   fetchProjectAgentReport,
   fetchProjectArchive,
   runArchiveQuery,
@@ -36,6 +39,10 @@ import type {
   ArchiveHall,
   ArchiveRelation,
   EvidenceCard,
+  GraphExplorerNode,
+  GraphExplorerRelation,
+  GraphNeighborhood,
+  GraphSummary,
   ProjectAgentReport,
 } from "./types";
 
@@ -1103,6 +1110,97 @@ function GraphExplorerPage({
   locale: Locale;
 }) {
   const t = copy[locale];
+  const initialHallId = archiveDraft.halls[0]?.id ?? null;
+  const [summary, setSummary] = useState<GraphSummary | null>(null);
+  const [neighborhood, setNeighborhood] = useState<GraphNeighborhood | null>(null);
+  const [focusedEntityId, setFocusedEntityId] = useState<string | null>(null);
+  const [selectedRelationId, setSelectedRelationId] = useState<string | null>(null);
+  const [selectedHallId, setSelectedHallId] = useState<string | null>(initialHallId);
+  const [depth, setDepth] = useState(1);
+  const [isLeftOpen, setIsLeftOpen] = useState(true);
+  const [isRightOpen, setIsRightOpen] = useState(true);
+  const [isSummaryLoading, setIsSummaryLoading] = useState(false);
+  const [isNeighborhoodLoading, setIsNeighborhoodLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    setSelectedHallId(archiveDraft.halls[0]?.id ?? null);
+    setFocusedEntityId(null);
+    setSelectedRelationId(null);
+  }, [archiveDraft.projectId, archiveDraft.halls]);
+
+  useEffect(() => {
+    let isMounted = true;
+    setSummary(null);
+    setIsSummaryLoading(true);
+
+    fetchGraphSummary(archiveDraft.projectId)
+      .then((nextSummary) => {
+        if (!isMounted) return;
+        setSummary(nextSummary);
+        setError("");
+      })
+      .catch((nextError) => {
+        if (!isMounted) return;
+        setSummary(null);
+        setError(nextError instanceof Error ? nextError.message : String(nextError));
+      })
+      .finally(() => {
+        if (isMounted) setIsSummaryLoading(false);
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [archiveDraft.projectId]);
+
+  useEffect(() => {
+    let isMounted = true;
+    setNeighborhood(null);
+    setIsNeighborhoodLoading(true);
+
+    fetchGraphNeighborhood({
+      projectId: archiveDraft.projectId,
+      hallId: selectedHallId,
+      focusEntityId: focusedEntityId,
+      depth,
+      relationTypes: [],
+    })
+      .then((nextNeighborhood) => {
+        if (!isMounted) return;
+        setNeighborhood(nextNeighborhood);
+        setError("");
+      })
+      .catch((nextError) => {
+        if (!isMounted) return;
+        setNeighborhood(null);
+        setError(nextError instanceof Error ? nextError.message : String(nextError));
+      })
+      .finally(() => {
+        if (isMounted) setIsNeighborhoodLoading(false);
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [archiveDraft.projectId, selectedHallId, focusedEntityId, depth]);
+
+  const selectedRelation =
+    neighborhood?.relations.find((relation) => relation.id === selectedRelationId) ?? null;
+  const focusedNode =
+    neighborhood?.nodes.find((node) => node.id === focusedEntityId) ?? null;
+  const nodeById = useMemo(
+    () => new Map(neighborhood?.nodes.map((node) => [node.id, node]) ?? []),
+    [neighborhood],
+  );
+  const visibleNodeCount = neighborhood?.nodes.length ?? 0;
+  const visibleRelationCount = neighborhood?.relations.length ?? 0;
+  const statusText = error
+    ? error
+    : locale === "zh"
+      ? `显示 ${formatNumber(visibleNodeCount)} 个节点 / ${formatNumber(visibleRelationCount)} 条关系`
+      : `Showing ${formatNumber(visibleNodeCount)} nodes / ${formatNumber(visibleRelationCount)} relations`;
+
   return (
     <section className="graph-explorer-page">
       <div className="graph-explorer-toolbar panel">
@@ -1111,26 +1209,492 @@ function GraphExplorerPage({
           <h2>{archiveDraft.projectId}</h2>
         </div>
         <div className="toolbar-actions">
+          <label className="graph-toolbar-select">
+            <span>{t.archiveHalls}</span>
+            <select
+              aria-label={String(t.archiveHalls)}
+              value={selectedHallId ?? ""}
+              onChange={(event) => {
+                setSelectedHallId(event.currentTarget.value || null);
+                setFocusedEntityId(null);
+                setSelectedRelationId(null);
+              }}
+            >
+              {archiveDraft.halls.map((hall) => (
+                <option key={hall.id} value={hall.id}>
+                  {hallTitle(hall, locale)}
+                </option>
+              ))}
+            </select>
+            <ChevronDown size={15} />
+          </label>
           <button
-            aria-label={locale === "zh" ? "自主任务稍后接入" : "Mission control coming later"}
+            aria-pressed={depth === 2}
             className="secondary-action"
-            disabled
-            title={locale === "zh" ? "自主任务稍后接入" : "Mission control coming later"}
+            onClick={() => {
+              setDepth((currentDepth) => (currentDepth === 1 ? 2 : 1));
+              setSelectedRelationId(null);
+            }}
             type="button"
           >
-            <CircleDot size={15} />
-            {t.missionControl}
+            <GitBranch size={15} />
+            {locale === "zh" ? `深度 ${depth}` : `Depth ${depth}`}
+          </button>
+          <button
+            aria-pressed={isLeftOpen}
+            className="secondary-action"
+            onClick={() => setIsLeftOpen((current) => !current)}
+            type="button"
+          >
+            <PanelLeft size={15} />
+            {isLeftOpen ? t.closeDrawer : t.recommendedStarts}
+          </button>
+          <button
+            aria-pressed={isRightOpen}
+            className="secondary-action"
+            onClick={() => setIsRightOpen((current) => !current)}
+            type="button"
+          >
+            <PanelRight size={15} />
+            {isRightOpen ? t.closeDrawer : t.entityDetails}
           </button>
         </div>
       </div>
-      <div className="graph-explorer-shell panel">
-        <div className="graph-explorer-canvas">
-          <Network size={28} />
-          <strong>{t.graphExplorer}</strong>
-        </div>
+      <div
+        className={`graph-explorer-shell panel ${isLeftOpen ? "has-left" : "is-left-closed"} ${
+          isRightOpen ? "has-right" : "is-right-closed"
+        }`}
+      >
+        {isLeftOpen ? (
+          <GraphStartsDrawer
+            focusedEntityId={focusedEntityId}
+            isLoading={isSummaryLoading}
+            locale={locale}
+            onStartSelect={(entityId) => {
+              setFocusedEntityId(entityId);
+              setSelectedRelationId(null);
+              setIsRightOpen(true);
+            }}
+            selectedHallId={selectedHallId}
+            summary={summary}
+          />
+        ) : null}
+        <GraphExplorerCanvas
+          focusedEntityId={focusedEntityId}
+          isLoading={isNeighborhoodLoading}
+          locale={locale}
+          neighborhood={neighborhood}
+          onNodeFocus={(entityId) => {
+            setFocusedEntityId(entityId);
+            setSelectedRelationId(null);
+            setIsRightOpen(true);
+          }}
+          onRelationSelect={(relationId) => {
+            setSelectedRelationId(relationId);
+            setIsRightOpen(true);
+          }}
+          selectedRelationId={selectedRelationId}
+        />
+        {isRightOpen ? (
+          <GraphEntityDrawer
+            focusedNode={focusedNode}
+            locale={locale}
+            nodeById={nodeById}
+            selectedRelation={selectedRelation}
+          />
+        ) : null}
+      </div>
+      <div className={`graph-explorer-status ${error ? "is-error" : ""}`} role="status">
+        {statusText}
       </div>
     </section>
   );
+}
+
+function GraphStartsDrawer({
+  focusedEntityId,
+  isLoading,
+  locale,
+  onStartSelect,
+  selectedHallId,
+  summary,
+}: {
+  focusedEntityId: string | null;
+  isLoading: boolean;
+  locale: Locale;
+  onStartSelect: (entityId: string) => void;
+  selectedHallId: string | null;
+  summary: GraphSummary | null;
+}) {
+  const t = copy[locale];
+  const starts = useMemo(() => {
+    const recommendedStarts = summary?.recommended_starts ?? [];
+    if (!selectedHallId) return recommendedStarts;
+    const hallStarts = recommendedStarts.filter((start) => start.hall_ids.includes(selectedHallId));
+    return hallStarts.length ? hallStarts : recommendedStarts;
+  }, [selectedHallId, summary]);
+  const emptyText = isLoading
+    ? locale === "zh"
+      ? "正在加载推荐起点..."
+      : "Loading recommended starts..."
+    : locale === "zh"
+      ? "暂无推荐起点。"
+      : "No recommended starts yet.";
+
+  return (
+    <aside className="graph-drawer graph-drawer-left" aria-label={String(t.recommendedStarts)}>
+      <div className="panel-heading">
+        <div>
+          <span className="eyebrow">{t.graphExplorer}</span>
+          <h2>{t.recommendedStarts}</h2>
+        </div>
+        <PanelLeft size={18} />
+      </div>
+      <div className="graph-start-list">
+        {starts.length ? (
+          starts.map((start) => (
+            <button
+              className={`graph-start-item ${start.entity_id === focusedEntityId ? "is-active" : ""}`}
+              key={start.entity_id}
+              onClick={() => onStartSelect(start.entity_id)}
+              type="button"
+            >
+              <span className="graph-start-group">{start.group}</span>
+              <strong>{start.label}</strong>
+              <span>{start.reason}</span>
+              <small>{Math.round(start.score * 100)}%</small>
+            </button>
+          ))
+        ) : (
+          <p className="empty-note">{emptyText}</p>
+        )}
+      </div>
+    </aside>
+  );
+}
+
+function GraphEntityDrawer({
+  focusedNode,
+  locale,
+  nodeById,
+  selectedRelation,
+}: {
+  focusedNode: GraphExplorerNode | null;
+  locale: Locale;
+  nodeById: Map<string, GraphExplorerNode>;
+  selectedRelation: GraphExplorerRelation | null;
+}) {
+  const t = copy[locale];
+  const sourceNode = selectedRelation ? nodeById.get(selectedRelation.source_id) : null;
+  const targetNode = selectedRelation ? nodeById.get(selectedRelation.target_id) : null;
+  const emptyText =
+    locale === "zh" ? "选择一个节点或关系查看详情。" : "Select a node or relation to inspect details.";
+  const sourcePathFallback = locale === "zh" ? "未提供来源路径" : "No source path provided";
+
+  return (
+    <aside className="graph-drawer graph-drawer-right" aria-label={String(t.entityDetails)}>
+      <div className="panel-heading">
+        <div>
+          <span className="eyebrow">{t.graphExplorer}</span>
+          <h2>{t.entityDetails}</h2>
+        </div>
+        <PanelRight size={18} />
+      </div>
+      <div className="entity-detail-stack">
+        {focusedNode ? (
+          <section className="entity-detail-card">
+            <span className="entity-label">{t.currentFocus}</span>
+            <h3>{focusedNode.label}</h3>
+            <div className="entity-meta-grid">
+              <span>Type</span>
+              <strong>{typeLabel(focusedNode.type, locale)}</strong>
+              <span>Degree</span>
+              <strong>{focusedNode.degree}</strong>
+              <span>Importance</span>
+              <strong>{Math.round(focusedNode.importance * 100)}%</strong>
+              <span>Evidence</span>
+              <strong>{focusedNode.evidence_ids.length}</strong>
+            </div>
+            <code>{focusedNode.source_path ?? sourcePathFallback}</code>
+            {focusedNode.tags.length ? (
+              <div className="type-row">
+                {focusedNode.tags.slice(0, 6).map((tag) => (
+                  <span className="mini-pill" key={tag}>
+                    {tag}
+                  </span>
+                ))}
+              </div>
+            ) : null}
+          </section>
+        ) : (
+          <p className="empty-note">{emptyText}</p>
+        )}
+        {selectedRelation ? (
+          <section className="entity-detail-card relation-detail">
+            <span className="entity-label">{t.relation}</span>
+            <h3>{typeLabel(selectedRelation.type, locale)}</h3>
+            <div className="relation-path">
+              <strong>{sourceNode?.label ?? selectedRelation.source_id}</strong>
+              <span>{selectedRelation.type}</span>
+              <strong>{targetNode?.label ?? selectedRelation.target_id}</strong>
+            </div>
+            <div className="entity-meta-grid">
+              <span>Weight</span>
+              <strong>{selectedRelation.weight}</strong>
+              <span>Evidence</span>
+              <strong>{selectedRelation.evidence_ids.length}</strong>
+              <span>Halls</span>
+              <strong>{selectedRelation.hall_ids.length}</strong>
+            </div>
+          </section>
+        ) : null}
+      </div>
+    </aside>
+  );
+}
+
+function GraphExplorerCanvas({
+  focusedEntityId,
+  isLoading,
+  locale,
+  neighborhood,
+  onNodeFocus,
+  onRelationSelect,
+  selectedRelationId,
+}: {
+  focusedEntityId: string | null;
+  isLoading: boolean;
+  locale: Locale;
+  neighborhood: GraphNeighborhood | null;
+  onNodeFocus: (entityId: string) => void;
+  onRelationSelect: (relationId: string) => void;
+  selectedRelationId: string | null;
+}) {
+  const layout = useMemo(
+    () => (neighborhood ? layoutGraph(neighborhood, focusedEntityId) : { nodes: [], relations: [] }),
+    [focusedEntityId, neighborhood],
+  );
+  const handleNodeKeyDown = (event: KeyboardEvent<SVGGElement>, entityId: string) => {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    event.preventDefault();
+    onNodeFocus(entityId);
+  };
+  const handleRelationKeyDown = (event: KeyboardEvent<SVGGElement>, relationId: string) => {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    event.preventDefault();
+    onRelationSelect(relationId);
+  };
+
+  if (isLoading) {
+    return (
+      <div className="graph-explorer-canvas">
+        <div className="graph-canvas-message">
+          <Network size={28} />
+          <strong>{locale === "zh" ? "正在加载图谱邻域" : "Loading graph neighborhood"}</strong>
+        </div>
+      </div>
+    );
+  }
+
+  if (!neighborhood) {
+    return (
+      <div className="graph-explorer-canvas">
+        <div className="graph-canvas-message">
+          <Network size={28} />
+          <strong>{locale === "zh" ? "暂无图谱数据" : "No graph data loaded"}</strong>
+        </div>
+      </div>
+    );
+  }
+
+  if (neighborhood.is_sparse) {
+    const sparseText =
+      neighborhood.sparse_reason ??
+      (locale === "zh"
+        ? "当前筛选下图谱较稀疏，请尝试其他展厅或推荐起点。"
+        : "This graph is sparse for the current filters. Try another hall or recommended start.");
+    return (
+      <div className="graph-explorer-canvas">
+        <div className="graph-canvas-message">
+          <Network size={28} />
+          <strong>{locale === "zh" ? "图谱数据较少" : "Sparse graph"}</strong>
+          <span>{sparseText}</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (!layout.nodes.length) {
+    return (
+      <div className="graph-explorer-canvas">
+        <div className="graph-canvas-message">
+          <Network size={28} />
+          <strong>{locale === "zh" ? "没有可展示的节点" : "No visible nodes"}</strong>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="graph-explorer-canvas">
+      <svg viewBox="0 0 840 520" role="img" aria-label={locale === "zh" ? "知识图谱邻域" : "Knowledge graph neighborhood"}>
+        <defs>
+          <marker id="explorerArrow" markerHeight="7" markerWidth="7" orient="auto" refX="6" refY="3.5">
+            <path d="M0,0 L7,3.5 L0,7 Z" />
+          </marker>
+          <marker id="explorerArrowSelected" markerHeight="8" markerWidth="8" orient="auto" refX="7" refY="4">
+            <path d="M0,0 L8,4 L0,8 Z" />
+          </marker>
+        </defs>
+        {layout.relations.map((relation) => {
+          const isSelected = relation.id === selectedRelationId;
+          const relationLabel = `${relation.sourceLabel} ${relation.type} ${relation.targetLabel}`;
+          return (
+            <g
+              aria-label={relationLabel}
+              className={`explorer-edge-hit ${isSelected ? "is-selected" : ""}`}
+              key={relation.id}
+              onClick={() => onRelationSelect(relation.id)}
+              onKeyDown={(event) => handleRelationKeyDown(event, relation.id)}
+              role="button"
+              tabIndex={0}
+            >
+              <line className="explorer-edge-target" x1={relation.x1} x2={relation.x2} y1={relation.y1} y2={relation.y2} />
+              <line
+                className={`explorer-edge ${relation.isFocusEdge ? "is-focus-edge" : ""} ${
+                  isSelected ? "is-selected" : ""
+                } ${relation.isDimmed ? "is-dimmed" : ""}`}
+                markerEnd={isSelected ? "url(#explorerArrowSelected)" : "url(#explorerArrow)"}
+                x1={relation.x1}
+                x2={relation.x2}
+                y1={relation.y1}
+                y2={relation.y2}
+              />
+              <title>{relationLabel}</title>
+            </g>
+          );
+        })}
+        {layout.nodes.map((node) => (
+          <g
+            aria-label={node.label}
+            className={`explorer-node ${node.tone} ${node.isFocused ? "is-focused" : ""} ${
+              node.isDimmed ? "is-dimmed" : ""
+            }`}
+            key={node.id}
+            onClick={() => onNodeFocus(node.id)}
+            onKeyDown={(event) => handleNodeKeyDown(event, node.id)}
+            role="button"
+            tabIndex={0}
+          >
+            <title>{node.label}</title>
+            <circle className="node-glow" cx={node.x} cy={node.y} r={node.isFocused ? 54 : 42} />
+            <circle cx={node.x} cy={node.y} r={node.isFocused ? 20 : 15} />
+            <text textAnchor="middle" x={node.x} y={node.y + (node.isFocused ? 42 : 35)}>
+              {compactGraphLabel(node.label, 26)}
+            </text>
+          </g>
+        ))}
+      </svg>
+    </div>
+  );
+}
+
+type ExplorerLayoutNode = GraphExplorerNode & {
+  x: number;
+  y: number;
+  tone: GraphTone;
+  isFocused: boolean;
+  isDimmed: boolean;
+};
+
+type ExplorerLayoutRelation = GraphExplorerRelation & {
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+  sourceLabel: string;
+  targetLabel: string;
+  isFocusEdge: boolean;
+  isDimmed: boolean;
+};
+
+function layoutGraph(
+  neighborhood: GraphNeighborhood,
+  focusedEntityId: string | null,
+): { nodes: ExplorerLayoutNode[]; relations: ExplorerLayoutRelation[] } {
+  const centerX = 420;
+  const centerY = 260;
+  const sourceNodes = neighborhood.nodes;
+  if (!sourceNodes.length) return { nodes: [], relations: [] };
+
+  const nodeIds = new Set(sourceNodes.map((node) => node.id));
+  const visibleRelations = neighborhood.relations.filter(
+    (relation) => nodeIds.has(relation.source_id) && nodeIds.has(relation.target_id),
+  );
+  const requestedFocus = focusedEntityId && nodeIds.has(focusedEntityId) ? focusedEntityId : null;
+  const centerNodeId = requestedFocus ?? sourceNodes[0].id;
+  const focusEdgeIds = new Set<string>();
+  const focusConnectedIds = new Set<string>();
+  visibleRelations.forEach((relation) => {
+    if (requestedFocus && (relation.source_id === centerNodeId || relation.target_id === centerNodeId)) {
+      focusEdgeIds.add(relation.id);
+      focusConnectedIds.add(relation.source_id === centerNodeId ? relation.target_id : relation.source_id);
+    }
+  });
+
+  const orderedNodes = [...sourceNodes].sort((left, right) => {
+    if (left.id === centerNodeId) return -1;
+    if (right.id === centerNodeId) return 1;
+    const leftConnected = focusConnectedIds.has(left.id) ? 0 : 1;
+    const rightConnected = focusConnectedIds.has(right.id) ? 0 : 1;
+    if (leftConnected !== rightConnected) return leftConnected - rightConnected;
+    return right.importance - left.importance;
+  });
+  const outerNodes = orderedNodes.filter((node) => node.id !== centerNodeId);
+  const positionedNodes = new Map<string, ExplorerLayoutNode>();
+
+  orderedNodes.forEach((node, index) => {
+    const isCenter = node.id === centerNodeId;
+    const outerIndex = Math.max(0, index - 1);
+    const outerCount = Math.max(outerNodes.length, 1);
+    const connected = focusConnectedIds.has(node.id);
+    const angle = -Math.PI / 2 + (outerIndex / outerCount) * Math.PI * 2 + (outerCount > 14 ? (outerIndex % 2) * 0.1 : 0);
+    const radiusX = connected || !requestedFocus ? 255 : 315;
+    const radiusY = connected || !requestedFocus ? 155 : 205;
+    const x = isCenter ? centerX : centerX + Math.cos(angle) * radiusX;
+    const y = isCenter ? centerY : centerY + Math.sin(angle) * radiusY;
+    positionedNodes.set(node.id, {
+      ...node,
+      x: Math.min(790, Math.max(50, x)),
+      y: Math.min(475, Math.max(55, y)),
+      tone: isCenter ? "accent" : graphToneCycle[index % graphToneCycle.length],
+      isFocused: Boolean(requestedFocus && isCenter),
+      isDimmed: Boolean(requestedFocus && !isCenter && !connected),
+    });
+  });
+
+  const nodes = Array.from(positionedNodes.values());
+  const relations = visibleRelations
+    .map((relation) => {
+      const source = positionedNodes.get(relation.source_id);
+      const target = positionedNodes.get(relation.target_id);
+      if (!source || !target) return null;
+      const isFocusEdge = focusEdgeIds.has(relation.id);
+      return {
+        ...relation,
+        x1: source.x,
+        y1: source.y,
+        x2: target.x,
+        y2: target.y,
+        sourceLabel: source.label,
+        targetLabel: target.label,
+        isFocusEdge,
+        isDimmed: Boolean(requestedFocus && !isFocusEdge),
+      };
+    })
+    .filter((relation): relation is ExplorerLayoutRelation => Boolean(relation));
+
+  return { nodes, relations };
 }
 
 function AgentPipelinePanel({

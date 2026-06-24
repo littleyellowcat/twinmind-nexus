@@ -1227,8 +1227,214 @@ button {
 
 .graph-explorer-shell {
   position: relative;
+  display: grid;
+  grid-template-columns: 300px minmax(420px, 1fr) 330px;
   min-height: clamp(420px, calc(100vh - 250px), 760px);
   overflow: hidden;
+}
+
+.graph-explorer-shell.is-left-closed {
+  grid-template-columns: minmax(420px, 1fr) 330px;
+}
+
+.graph-explorer-shell.is-right-closed {
+  grid-template-columns: 300px minmax(420px, 1fr);
+}
+
+.graph-explorer-shell.is-left-closed.is-right-closed {
+  grid-template-columns: minmax(420px, 1fr);
+}
+
+.graph-toolbar-select {
+  min-height: 38px;
+  min-width: 210px;
+  display: inline-grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid rgba(59, 77, 99, 0.78);
+  border-radius: 8px;
+  padding: 0 10px;
+  color: var(--muted);
+  background: rgba(12, 20, 31, 0.76);
+}
+
+.graph-toolbar-select span {
+  color: var(--subtle);
+  font-size: 11px;
+  font-weight: 750;
+  white-space: nowrap;
+}
+
+.graph-toolbar-select select {
+  min-width: 0;
+  width: 100%;
+  appearance: none;
+  border: 0;
+  outline: 0;
+  color: var(--text);
+  background: transparent;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 730;
+}
+
+.graph-toolbar-select option {
+  background: #101a27;
+  color: var(--text);
+}
+
+.graph-drawer {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border-color: rgba(59, 77, 99, 0.62);
+  background: rgba(9, 16, 25, 0.68);
+}
+
+.graph-drawer-left {
+  border-right: 1px solid rgba(59, 77, 99, 0.58);
+}
+
+.graph-drawer-right {
+  border-left: 1px solid rgba(59, 77, 99, 0.58);
+}
+
+.graph-start-list,
+.entity-detail-stack {
+  min-height: 0;
+  overflow: auto;
+  padding: 12px;
+}
+
+.graph-start-list {
+  display: grid;
+  align-content: start;
+  gap: 9px;
+}
+
+.graph-start-item {
+  min-width: 0;
+  width: 100%;
+  display: grid;
+  gap: 6px;
+  border: 1px solid rgba(59, 77, 99, 0.62);
+  border-radius: 8px;
+  padding: 11px;
+  color: var(--text);
+  text-align: left;
+  background: rgba(8, 13, 20, 0.5);
+}
+
+.graph-start-item:hover,
+.graph-start-item.is-active {
+  border-color: rgba(53, 208, 186, 0.68);
+  background: rgba(53, 208, 186, 0.07);
+}
+
+.graph-start-item strong,
+.entity-detail-card h3 {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.graph-start-item span:not(.graph-start-group) {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.graph-start-item small,
+.graph-start-group {
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 760;
+  line-height: 14px;
+}
+
+.entity-detail-stack {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+}
+
+.entity-detail-card {
+  min-width: 0;
+  border: 1px solid rgba(59, 77, 99, 0.62);
+  border-radius: 8px;
+  padding: 12px;
+  background: rgba(8, 13, 20, 0.5);
+}
+
+.entity-detail-card h3 {
+  margin: 4px 0 10px;
+  font-size: 15px;
+  line-height: 21px;
+}
+
+.entity-detail-card code {
+  display: block;
+  min-width: 0;
+  margin-top: 10px;
+  overflow: hidden;
+  color: var(--blue);
+  font-family: "SF Mono", "JetBrains Mono", monospace;
+  font-size: 11px;
+  line-height: 16px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.entity-meta-grid {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 7px 10px;
+  font-size: 12px;
+}
+
+.entity-meta-grid span {
+  color: var(--subtle);
+}
+
+.entity-meta-grid strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.relation-detail {
+  border-color: rgba(106, 168, 255, 0.42);
+}
+
+.relation-path {
+  display: grid;
+  gap: 5px;
+  margin-bottom: 12px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.relation-path strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.relation-path span {
+  justify-self: start;
+  border: 1px solid rgba(53, 208, 186, 0.38);
+  border-radius: 999px;
+  padding: 2px 8px;
+  color: var(--accent);
+  font-family: "SF Mono", "JetBrains Mono", monospace;
+  font-size: 10px;
 }
 
 .graph-explorer-canvas {
@@ -1243,6 +1449,154 @@ button {
     radial-gradient(circle at 50% 45%, rgba(53, 208, 186, 0.12), transparent 38%),
     #07101a;
   background-size: 52px 52px, 52px 52px, auto, auto;
+}
+
+.graph-canvas-message {
+  max-width: min(420px, 82%);
+  display: grid;
+  place-items: center;
+  gap: 9px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.graph-canvas-message strong {
+  color: var(--text);
+}
+
+.graph-canvas-message span {
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.graph-explorer-canvas svg {
+  width: 100%;
+  height: 100%;
+  min-height: clamp(390px, calc(100vh - 280px), 730px);
+  display: block;
+}
+
+.explorer-edge-hit,
+.explorer-node {
+  outline: 0;
+  cursor: pointer;
+}
+
+.explorer-edge-target {
+  stroke: transparent;
+  stroke-width: 16;
+}
+
+.explorer-edge {
+  stroke: rgba(154, 169, 186, 0.48);
+  stroke-width: 1.7;
+  marker-end: url("#explorerArrow");
+  transition: opacity 160ms ease, stroke 160ms ease, stroke-width 160ms ease;
+}
+
+.explorer-edge.is-focus-edge {
+  stroke: rgba(53, 208, 186, 0.84);
+  stroke-width: 2.3;
+}
+
+.explorer-edge.is-selected {
+  stroke: var(--amber);
+  stroke-width: 3.2;
+  marker-end: url("#explorerArrowSelected");
+}
+
+.explorer-edge.is-dimmed {
+  opacity: 0.2;
+}
+
+.explorer-edge-hit:focus-visible .explorer-edge,
+.explorer-edge-hit:hover .explorer-edge {
+  stroke: var(--accent);
+  stroke-width: 2.8;
+  opacity: 1;
+}
+
+.explorer-node .node-glow {
+  fill: rgba(53, 208, 186, 0.12);
+  opacity: 0.6;
+}
+
+.explorer-node circle:not(.node-glow) {
+  fill: var(--panel-2);
+  stroke: rgba(238, 246, 255, 0.72);
+  stroke-width: 1.5;
+  transition: r 160ms ease, stroke 160ms ease, fill 160ms ease, opacity 160ms ease;
+}
+
+.explorer-node text {
+  fill: var(--text);
+  font-size: 12px;
+  font-weight: 730;
+  letter-spacing: 0;
+  paint-order: stroke;
+  stroke: rgba(7, 16, 26, 0.94);
+  stroke-width: 4px;
+  stroke-linejoin: round;
+}
+
+.explorer-node.accent circle:not(.node-glow) {
+  fill: rgba(53, 208, 186, 0.22);
+  stroke: var(--accent);
+}
+
+.explorer-node.blue circle:not(.node-glow) {
+  fill: rgba(106, 168, 255, 0.2);
+  stroke: var(--blue);
+}
+
+.explorer-node.amber circle:not(.node-glow) {
+  fill: rgba(243, 182, 95, 0.18);
+  stroke: var(--amber);
+}
+
+.explorer-node.violet circle:not(.node-glow) {
+  fill: rgba(184, 148, 255, 0.18);
+  stroke: var(--violet);
+}
+
+.explorer-node.is-focused circle:not(.node-glow) {
+  fill: rgba(53, 208, 186, 0.34);
+  stroke: var(--accent);
+  stroke-width: 3;
+}
+
+.explorer-node.is-focused text {
+  fill: var(--accent);
+  font-size: 13px;
+}
+
+.explorer-node.is-dimmed {
+  opacity: 0.34;
+}
+
+.explorer-node:focus-visible circle:not(.node-glow),
+.explorer-node:hover circle:not(.node-glow) {
+  stroke: var(--text);
+  stroke-width: 3;
+}
+
+.graph-explorer-status {
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  border: 1px solid rgba(59, 77, 99, 0.66);
+  border-radius: 8px;
+  padding: 0 12px;
+  color: var(--muted);
+  background: rgba(8, 13, 20, 0.58);
+  font-size: 12px;
+  font-weight: 720;
+}
+
+.graph-explorer-status.is-error {
+  border-color: rgba(239, 107, 122, 0.5);
+  color: var(--danger);
+  background: rgba(239, 107, 122, 0.08);
 }
 
 .selected-entity {
@@ -1600,6 +1954,25 @@ button {
   .agent-analysis-page .agent-pipeline {
     grid-template-columns: 1fr;
   }
+
+  .graph-explorer-shell,
+  .graph-explorer-shell.is-left-closed,
+  .graph-explorer-shell.is-right-closed,
+  .graph-explorer-shell.is-left-closed.is-right-closed {
+    grid-template-columns: 1fr;
+  }
+
+  .graph-drawer-left,
+  .graph-drawer-right {
+    border-right: 0;
+    border-left: 0;
+    border-bottom: 1px solid rgba(59, 77, 99, 0.58);
+  }
+
+  .graph-drawer-right {
+    border-top: 1px solid rgba(59, 77, 99, 0.58);
+    border-bottom: 0;
+  }
 }
 
 @media (max-width: 860px) {
@@ -1632,8 +2005,20 @@ button {
   }
 
   .topbar-actions,
+  .graph-explorer-toolbar,
+  .graph-explorer-toolbar .toolbar-actions,
   .upload-dock {
     align-items: stretch;
+  }
+
+  .graph-explorer-toolbar,
+  .graph-explorer-toolbar .toolbar-actions {
+    flex-direction: column;
+  }
+
+  .graph-toolbar-select,
+  .graph-explorer-toolbar .secondary-action {
+    width: 100%;
   }
 
   .scope-select {
