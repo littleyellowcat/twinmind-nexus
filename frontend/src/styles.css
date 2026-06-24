@@ -848,6 +848,17 @@ button {
   color: var(--accent);
 }
 
+.secondary-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.56;
+  color: var(--subtle);
+}
+
+.secondary-action:disabled:hover {
+  border-color: rgba(59, 77, 99, 0.78);
+  color: var(--subtle);
+}
+
 .icon-button {
   width: 30px;
   height: 30px;
@@ -1216,12 +1227,12 @@ button {
 
 .graph-explorer-shell {
   position: relative;
-  min-height: calc(100vh - 250px);
+  min-height: clamp(420px, calc(100vh - 250px), 760px);
   overflow: hidden;
 }
 
 .graph-explorer-canvas {
-  min-height: calc(100vh - 280px);
+  min-height: clamp(390px, calc(100vh - 280px), 730px);
   display: grid;
   place-items: center;
   gap: 10px;

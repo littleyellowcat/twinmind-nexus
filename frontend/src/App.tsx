@@ -609,6 +609,7 @@ function PageTabs({
         const Icon = tab.icon;
         return (
           <button
+            aria-current={activePage === tab.id ? "page" : undefined}
             className={activePage === tab.id ? "is-active" : ""}
             key={tab.id}
             onClick={() => onPageChange(tab.id)}
@@ -814,7 +815,6 @@ function StarMap({
               <CircleDot size={16} />
             </button>
           ) : null}
-          <Network size={18} />
         </div>
       </div>
       {(searchVisible || searchQuery) ? (
@@ -1111,7 +1111,13 @@ function GraphExplorerPage({
           <h2>{archiveDraft.projectId}</h2>
         </div>
         <div className="toolbar-actions">
-          <button className="secondary-action" type="button">
+          <button
+            aria-label={locale === "zh" ? "自主任务稍后接入" : "Mission control coming later"}
+            className="secondary-action"
+            disabled
+            title={locale === "zh" ? "自主任务稍后接入" : "Mission control coming later"}
+            type="button"
+          >
             <CircleDot size={15} />
             {t.missionControl}
           </button>
