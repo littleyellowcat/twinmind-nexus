@@ -1460,10 +1460,10 @@ function GraphStartsDrawer({
       </div>
       <div className="graph-start-list">
         {starts.length ? (
-          starts.map((start) => (
+          starts.map((start, index) => (
             <button
               className={`graph-start-item ${start.entity_id === focusedEntityId ? "is-active" : ""}`}
-              key={start.entity_id}
+              key={`${start.group}-${start.entity_id}-${index}`}
               onClick={() => onStartSelect(start.entity_id)}
               type="button"
             >
@@ -1743,12 +1743,16 @@ function layoutGraph(
 ): { nodes: ExplorerLayoutNode[]; relations: ExplorerLayoutRelation[] } {
   const centerX = 420;
   const centerY = 260;
-  const sourceNodes = neighborhood.nodes;
+  const sourceNodes = Array.from(new Map(neighborhood.nodes.map((node) => [node.id, node])).values());
   if (!sourceNodes.length) return { nodes: [], relations: [] };
 
   const nodeIds = new Set(sourceNodes.map((node) => node.id));
-  const visibleRelations = neighborhood.relations.filter(
-    (relation) => nodeIds.has(relation.source_id) && nodeIds.has(relation.target_id),
+  const visibleRelations = Array.from(
+    new Map(
+      neighborhood.relations
+        .filter((relation) => nodeIds.has(relation.source_id) && nodeIds.has(relation.target_id))
+        .map((relation) => [relation.id, relation]),
+    ).values(),
   );
   const requestedFocus = focusedEntityId && nodeIds.has(focusedEntityId) ? focusedEntityId : null;
   const centerNodeId = requestedFocus ?? sourceNodes[0].id;
