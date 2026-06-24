@@ -35,7 +35,7 @@ def _draft() -> ProjectArchiveDraft:
                 id="hall_empty",
                 name="Empty Hall",
                 description="No relations",
-                entity_ids=["doc:readme"],
+                entity_ids=["orphan:note"],
             ),
         ],
         entities=[
@@ -66,6 +66,12 @@ def _draft() -> ProjectArchiveDraft:
                 name="README.md",
                 source_path="README.md",
                 evidence_ids=["ev:readme"],
+            ),
+            ProjectEntity(
+                id="orphan:note",
+                type="Concept",
+                name="Orphan Note",
+                evidence_ids=[],
             ),
         ],
         relations=[
@@ -128,7 +134,7 @@ def test_graph_summary_recommends_starts_with_reasons() -> None:
     summary = build_graph_summary(_draft())
 
     assert summary.project_id == "demo"
-    assert summary.metrics == {"entities": 4, "relations": 3, "evidence": 4}
+    assert summary.metrics == {"entities": 5, "relations": 3, "evidence": 4}
     assert summary.recommended_starts[0].entity_id in {
         "file:main.py",
         "class:ArchiveBuilder",

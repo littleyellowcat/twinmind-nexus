@@ -141,23 +141,12 @@ def build_graph_neighborhood(
     if hall_id is not None:
         hall = hall_by_id.get(hall_id)
         hall_entity_ids = set(hall.entity_ids) if hall else set()
-        document_only_hall = bool(hall_entity_ids) and all(
-            _is_document_entity(entity_by_id[entity_id])
-            for entity_id in hall_entity_ids
-            if entity_id in entity_by_id
-        )
         candidate_relations = [
             relation
             for relation in candidate_relations
             if (
                 relation.source_id in hall_entity_ids
                 or relation.target_id in hall_entity_ids
-            )
-            and (
-                relation_types_filter
-                or not (
-                    document_only_hall and relation.type.upper() == "MENTIONS"
-                )
             )
         ]
         if not candidate_relations:
