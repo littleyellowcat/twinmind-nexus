@@ -19,16 +19,19 @@ import {
   X,
 } from "lucide-react";
 import type { KeyboardEvent, ReactNode } from "react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   fetchAgentStatus,
   fetchArchiveDraft,
   fetchGraphNeighborhood,
   fetchGraphSummary,
+  fetchMissionGraphOverlay,
   fetchProjectAgentReport,
   fetchProjectArchive,
   runArchiveQuery,
   runProjectAgentReportJob,
+  startArchitectureMission,
+  updateMissionStatus,
   uploadProjectArchive,
 } from "./api";
 import { archiveDraft as fallbackArchiveDraft } from "./archiveData";
@@ -38,11 +41,14 @@ import type {
   ArchiveDraft,
   ArchiveHall,
   ArchiveRelation,
+  AutonomousMission,
   EvidenceCard,
   GraphExplorerNode,
   GraphExplorerRelation,
   GraphNeighborhood,
   GraphSummary,
+  MissionGraphOverlay,
+  MissionTask,
   ProjectAgentReport,
 } from "./types";
 
@@ -113,6 +119,28 @@ const copy = {
     creatingArchive: "生成中",
     archiveCreated: "档案已生成",
     agentPipeline: "Agent 流水线",
+    autonomousMission: "自主架构任务",
+    startMission: "启动架构任务",
+    missionStarting: "任务启动中",
+    missionReady: "任务已完成",
+    missionRunning: "任务运行中",
+    missionPaused: "任务已暂停",
+    missionStopped: "任务已停止",
+    noMission: "还没有自主任务。启动后会显示真实任务队列、校验状态和图谱覆盖层。",
+    missionError: "自主任务失败",
+    missionId: "任务 ID",
+    missionGoal: "目标",
+    stopReason: "停止原因",
+    maxSteps: "最大步数",
+    completedTasks: "完成任务",
+    missionTimeline: "任务时间线",
+    pauseMission: "暂停",
+    resumeMission: "继续",
+    stopMission: "停止",
+    openAgentMission: "到 Agent 页启动",
+    viewMission: "查看自主任务",
+    overlayActive: "任务覆盖层",
+    riskOverlay: "风险高亮",
     noAgentReport: "当前档案还没有自动 Agent 报告。上传新档案或重新运行分析后会显示。",
     curatorSummary: "策展总结",
     rerunAnalysis: "运行分析",
@@ -227,6 +255,28 @@ const copy = {
     creatingArchive: "Creating",
     archiveCreated: "Archive created",
     agentPipeline: "Agent pipeline",
+    autonomousMission: "Autonomous architecture mission",
+    startMission: "Start architecture mission",
+    missionStarting: "Starting mission",
+    missionReady: "Mission complete",
+    missionRunning: "Mission running",
+    missionPaused: "Mission paused",
+    missionStopped: "Mission stopped",
+    noMission: "No autonomous mission yet. Start one to see the real task queue, verifier state, and graph overlay.",
+    missionError: "Mission failed",
+    missionId: "Mission ID",
+    missionGoal: "Goal",
+    stopReason: "Stop reason",
+    maxSteps: "Max steps",
+    completedTasks: "Completed tasks",
+    missionTimeline: "Task timeline",
+    pauseMission: "Pause",
+    resumeMission: "Resume",
+    stopMission: "Stop",
+    openAgentMission: "Open Agent to start",
+    viewMission: "View mission",
+    overlayActive: "Mission overlay",
+    riskOverlay: "Risk highlight",
     noAgentReport: "No automatic Agent report exists for this archive yet.",
     curatorSummary: "Curator summary",
     rerunAnalysis: "Run analysis",
@@ -1102,12 +1152,51 @@ const statusLabel = (status: string, locale: Locale) => {
   return String(labels[status] ?? status);
 };
 
+const missionStatusLabel = (status: string, locale: Locale) => {
+  const labels: Record<string, Record<string, string>> = {
+    zh: {
+      completed: "已完成",
+      complete: "已完成",
+      failed: "失败",
+      paused: "已暂停",
+      pending: "等待",
+      running: "运行中",
+      stopped: "已停止",
+    },
+    en: {
+      completed: "Completed",
+      complete: "Completed",
+      failed: "Failed",
+      paused: "Paused",
+      pending: "Pending",
+      running: "Running",
+      stopped: "Stopped",
+    },
+  };
+  return labels[locale][status] ?? status;
+};
+
+const isMissionTerminal = (mission: AutonomousMission | null) =>
+  Boolean(mission && ["completed", "complete", "failed", "stopped"].includes(mission.status));
+
+const summarizeMissionItems = (items: Record<string, unknown>[], locale: Locale) => {
+  if (!items.length) return locale === "zh" ? "无" : "None";
+  return items
+    .slice(0, 2)
+    .map((item) => String(item.title ?? item.summary ?? item.detail ?? item.description ?? JSON.stringify(item)))
+    .join(" · ");
+};
+
 function GraphExplorerPage({
   archiveDraft,
   locale,
+  missionOverlay,
+  onOpenMission,
 }: {
   archiveDraft: ArchiveDraft;
   locale: Locale;
+  missionOverlay: MissionGraphOverlay | null;
+  onOpenMission: () => void;
 }) {
   const t = copy[locale];
   const initialHallId = archiveDraft.halls[0]?.id ?? null;
@@ -1260,6 +1349,15 @@ function GraphExplorerPage({
             <PanelRight size={15} />
             {isRightOpen ? t.closeDrawer : t.entityDetails}
           </button>
+          <button className="secondary-action mission-jump" onClick={onOpenMission} type="button">
+            <Sparkles size={15} />
+            {missionOverlay ? t.viewMission : t.openAgentMission}
+          </button>
+          {missionOverlay ? (
+            <span className="mission-overlay-pill">
+              {t.overlayActive}: {missionOverlay.explored_node_ids.length} / {t.riskOverlay}: {missionOverlay.risk_node_ids.length}
+            </span>
+          ) : null}
         </div>
       </div>
       <div
@@ -1285,6 +1383,7 @@ function GraphExplorerPage({
           focusedEntityId={focusedEntityId}
           isLoading={isNeighborhoodLoading}
           locale={locale}
+          missionOverlay={missionOverlay}
           neighborhood={neighborhood}
           onNodeFocus={(entityId) => {
             setFocusedEntityId(entityId);
@@ -1408,13 +1507,13 @@ function GraphEntityDrawer({
             <span className="entity-label">{t.currentFocus}</span>
             <h3>{focusedNode.label}</h3>
             <div className="entity-meta-grid">
-              <span>Type</span>
+              <span>{locale === "zh" ? "类型" : "Type"}</span>
               <strong>{typeLabel(focusedNode.type, locale)}</strong>
-              <span>Degree</span>
+              <span>{locale === "zh" ? "连接数" : "Degree"}</span>
               <strong>{focusedNode.degree}</strong>
-              <span>Importance</span>
+              <span>{locale === "zh" ? "重要度" : "Importance"}</span>
               <strong>{Math.round(focusedNode.importance * 100)}%</strong>
-              <span>Evidence</span>
+              <span>{t.evidenceUsed}</span>
               <strong>{focusedNode.evidence_ids.length}</strong>
             </div>
             <code>{focusedNode.source_path ?? sourcePathFallback}</code>
@@ -1441,11 +1540,11 @@ function GraphEntityDrawer({
               <strong>{targetNode?.label ?? selectedRelation.target_id}</strong>
             </div>
             <div className="entity-meta-grid">
-              <span>Weight</span>
+              <span>{locale === "zh" ? "权重" : "Weight"}</span>
               <strong>{selectedRelation.weight}</strong>
-              <span>Evidence</span>
+              <span>{t.evidenceUsed}</span>
               <strong>{selectedRelation.evidence_ids.length}</strong>
-              <span>Halls</span>
+              <span>{locale === "zh" ? "展厅" : "Halls"}</span>
               <strong>{selectedRelation.hall_ids.length}</strong>
             </div>
           </section>
@@ -1459,6 +1558,7 @@ function GraphExplorerCanvas({
   focusedEntityId,
   isLoading,
   locale,
+  missionOverlay,
   neighborhood,
   onNodeFocus,
   onRelationSelect,
@@ -1467,6 +1567,7 @@ function GraphExplorerCanvas({
   focusedEntityId: string | null;
   isLoading: boolean;
   locale: Locale;
+  missionOverlay: MissionGraphOverlay | null;
   neighborhood: GraphNeighborhood | null;
   onNodeFocus: (entityId: string) => void;
   onRelationSelect: (relationId: string) => void;
@@ -1550,6 +1651,8 @@ function GraphExplorerCanvas({
         </defs>
         {layout.relations.map((relation) => {
           const isSelected = relation.id === selectedRelationId;
+          const isExplored = missionOverlay?.explored_relation_ids.includes(relation.id) ?? false;
+          const isRisk = missionOverlay?.risk_relation_ids.includes(relation.id) ?? false;
           const relationLabel = `${relation.sourceLabel} ${relation.type} ${relation.targetLabel}`;
           return (
             <g
@@ -1565,7 +1668,9 @@ function GraphExplorerCanvas({
               <line
                 className={`explorer-edge ${relation.isFocusEdge ? "is-focus-edge" : ""} ${
                   isSelected ? "is-selected" : ""
-                } ${relation.isDimmed ? "is-dimmed" : ""}`}
+                } ${relation.isDimmed ? "is-dimmed" : ""} ${isExplored ? "is-agent-explored" : ""} ${
+                  isRisk ? "is-agent-risk" : ""
+                }`}
                 markerEnd={isSelected ? "url(#explorerArrowSelected)" : "url(#explorerArrow)"}
                 x1={relation.x1}
                 x2={relation.x2}
@@ -1576,26 +1681,31 @@ function GraphExplorerCanvas({
             </g>
           );
         })}
-        {layout.nodes.map((node) => (
-          <g
-            aria-label={node.label}
-            className={`explorer-node ${node.tone} ${node.isFocused ? "is-focused" : ""} ${
-              node.isDimmed ? "is-dimmed" : ""
-            }`}
-            key={node.id}
-            onClick={() => onNodeFocus(node.id)}
-            onKeyDown={(event) => handleNodeKeyDown(event, node.id)}
-            role="button"
-            tabIndex={0}
-          >
-            <title>{node.label}</title>
-            <circle className="node-glow" cx={node.x} cy={node.y} r={node.isFocused ? 54 : 42} />
-            <circle cx={node.x} cy={node.y} r={node.isFocused ? 20 : 15} />
-            <text textAnchor="middle" x={node.x} y={node.y + (node.isFocused ? 42 : 35)}>
-              {compactGraphLabel(node.label, 26)}
-            </text>
-          </g>
-        ))}
+        {layout.nodes.map((node) => {
+          const isExplored = missionOverlay?.explored_node_ids.includes(node.id) ?? false;
+          const isRisk = missionOverlay?.risk_node_ids.includes(node.id) ?? false;
+          return (
+            <g
+              aria-label={node.label}
+              className={`explorer-node ${node.tone} ${node.isFocused ? "is-focused" : ""} ${
+                node.isDimmed ? "is-dimmed" : ""
+              } ${isExplored ? "is-agent-explored" : ""} ${isRisk ? "is-agent-risk" : ""}`}
+              key={node.id}
+              onClick={() => onNodeFocus(node.id)}
+              onKeyDown={(event) => handleNodeKeyDown(event, node.id)}
+              role="button"
+              tabIndex={0}
+            >
+              <title>{node.label}</title>
+              <circle className="node-glow" cx={node.x} cy={node.y} r={node.isFocused ? 54 : 42} />
+              <circle cx={node.x} cy={node.y} r={node.isFocused ? 20 : 15} />
+              {isRisk ? <circle className="risk-ring" cx={node.x} cy={node.y} r={node.isFocused ? 28 : 23} /> : null}
+              <text textAnchor="middle" x={node.x} y={node.y + (node.isFocused ? 42 : 35)}>
+                {compactGraphLabel(node.label, 26)}
+              </text>
+            </g>
+          );
+        })}
       </svg>
     </div>
   );
@@ -1911,10 +2021,138 @@ function TaskHistoryPanel({
   );
 }
 
+function MissionControlPanel({
+  error,
+  isBusy,
+  locale,
+  mission,
+  onPause,
+  onResume,
+  onStart,
+  onStop,
+}: {
+  error: string;
+  isBusy: boolean;
+  locale: Locale;
+  mission: AutonomousMission | null;
+  onPause: () => void;
+  onResume: () => void;
+  onStart: () => void;
+  onStop: () => void;
+}) {
+  const t = copy[locale];
+  const completedCount = mission?.tasks.filter((task) => ["completed", "complete"].includes(task.status)).length ?? 0;
+  const terminal = isMissionTerminal(mission);
+  const canPause = Boolean(mission && !terminal && mission.status !== "paused" && !isBusy);
+  const canResume = Boolean(mission && mission.status === "paused" && !isBusy);
+  const canStop = Boolean(mission && !terminal && !isBusy);
+  const statusText = mission
+    ? missionStatusLabel(mission.status, locale)
+    : locale === "zh"
+      ? "未启动"
+      : "Not started";
+
+  return (
+    <section className="mission-control panel" aria-label={String(t.autonomousMission)}>
+      <div className="mission-control-head">
+        <div>
+          <span className="eyebrow">{t.autonomousMission}</span>
+          <h2>{t.agentPage}</h2>
+        </div>
+        <div className="mission-actions">
+          <span className={`pipeline-status ${mission?.status ?? "pending"}`}>{statusText}</span>
+          <button className="primary-button compact" disabled={isBusy} onClick={onStart} type="button">
+            <Sparkles size={14} />
+            {isBusy ? t.missionStarting : t.startMission}
+          </button>
+          <button className="secondary-action compact" disabled={!canPause} onClick={onPause} type="button">
+            <CircleDot size={14} />
+            {t.pauseMission}
+          </button>
+          <button className="secondary-action compact" disabled={!canResume} onClick={onResume} type="button">
+            <Sparkles size={14} />
+            {t.resumeMission}
+          </button>
+          <button className="secondary-action compact danger" disabled={!canStop} onClick={onStop} type="button">
+            <X size={14} />
+            {t.stopMission}
+          </button>
+        </div>
+      </div>
+      {error ? (
+        <div className="mission-error" role="alert">
+          <strong>{t.missionError}</strong>
+          <span>{error}</span>
+        </div>
+      ) : null}
+      {mission ? (
+        <>
+          <div className="mission-meta-grid">
+            <span>{t.missionId}</span>
+            <strong>{mission.id}</strong>
+            <span>{t.missionGoal}</span>
+            <strong>{mission.goal}</strong>
+            <span>{t.stopReason}</span>
+            <strong>{mission.stop_reason || (locale === "zh" ? "未提供" : "Not provided")}</strong>
+            <span>{t.maxSteps}</span>
+            <strong>{mission.max_steps}</strong>
+            <span>{t.completedTasks}</span>
+            <strong>{completedCount} / {mission.tasks.length}</strong>
+          </div>
+          <div className="mission-timeline-head">
+            <strong>{t.missionTimeline}</strong>
+            <span>{mission.graph_overlay ? `${t.overlayActive}: ${mission.graph_overlay.explored_node_ids.length}` : ""}</span>
+          </div>
+          <div className="mission-task-list">
+            {mission.tasks.length ? (
+              mission.tasks.map((task) => (
+                <MissionTaskCard key={task.id} locale={locale} task={task} />
+              ))
+            ) : (
+              <p className="empty-note">{locale === "zh" ? "任务已创建，尚无队列记录。" : "Mission created, but no task records yet."}</p>
+            )}
+          </div>
+        </>
+      ) : (
+        <p className="empty-note mission-empty">{t.noMission}</p>
+      )}
+    </section>
+  );
+}
+
+function MissionTaskCard({ locale, task }: { locale: Locale; task: MissionTask }) {
+  const t = copy[locale];
+  return (
+    <article className={`mission-task ${task.status}`}>
+      <div className="mission-task-head">
+        <div>
+          <span className="eyebrow">{task.agent} · {task.task_type}</span>
+          <h3>{task.title}</h3>
+        </div>
+        <span className={`pipeline-status ${task.status}`}>{missionStatusLabel(task.status, locale)}</span>
+      </div>
+      <div className="mission-task-metrics">
+        <span>{locale === "zh" ? "校验" : "Verifier"}: {missionStatusLabel(task.verifier_status, locale)}</span>
+        <span>{t.confidence}: {Math.round(task.confidence * 100)}%</span>
+        <span>{t.evidenceUsed}: {task.evidence_ids.length}</span>
+        <span>{t.entitiesUsed}: {task.input_entity_ids.length}</span>
+      </div>
+      <div className="mission-task-notes">
+        <p><strong>{t.findings}</strong> {summarizeMissionItems(task.findings, locale)}</p>
+        <p><strong>{t.risks}</strong> {summarizeMissionItems(task.risks, locale)}</p>
+      </div>
+    </article>
+  );
+}
+
 export function App() {
   const [agentStatus, setAgentStatus] = useState<AgentStatus | null>(null);
   const [archiveDraft, setArchiveDraft] = useState<ArchiveDraft>(fallbackArchiveDraft);
   const [agentReport, setAgentReport] = useState<ProjectAgentReport | null>(null);
+  const [mission, setMission] = useState<AutonomousMission | null>(null);
+  const [missionOverlay, setMissionOverlay] = useState<MissionGraphOverlay | null>(null);
+  const [missionError, setMissionError] = useState("");
+  const [isMissionBusy, setIsMissionBusy] = useState(false);
   const [archiveIds, setArchiveIds] = useState<string[]>([fallbackArchiveDraft.projectId]);
   const [isFallbackArchive, setIsFallbackArchive] = useState(true);
   const [isLoadingArchive, setIsLoadingArchive] = useState(true);
@@ -1940,6 +2178,11 @@ export function App() {
   const [selectedRelationId, setSelectedRelationId] = useState("");
   const [selectedEvidenceId, setSelectedEvidenceId] = useState("");
   const [notice, setNotice] = useState("");
+  const activeProjectIdRef = useRef(archiveDraft.projectId);
+
+  useEffect(() => {
+    activeProjectIdRef.current = archiveDraft.projectId;
+  }, [archiveDraft.projectId]);
 
   useEffect(() => {
     let isMounted = true;
@@ -2014,6 +2257,10 @@ export function App() {
   const resetArchiveView = (draft: ArchiveDraft, report: ProjectAgentReport | null = null) => {
     setArchiveDraft(draft);
     setAgentReport(report);
+    setMission(null);
+    setMissionOverlay(null);
+    setMissionError("");
+    setIsMissionBusy(false);
     setSelectedArchiveId(draft.projectId);
     setSelectedHallId(draft.halls[0]?.id ?? fallbackArchiveDraft.halls[0].id);
     setSelectedRelationId("");
@@ -2113,6 +2360,56 @@ export function App() {
     }
   };
 
+  const refreshMissionOverlay = async (nextMission: AutonomousMission) => {
+    if (nextMission.project_id !== activeProjectIdRef.current) return;
+    if (nextMission.graph_overlay) {
+      setMissionOverlay(nextMission.graph_overlay);
+      return;
+    }
+    try {
+      setMissionOverlay(await fetchMissionGraphOverlay(nextMission.id));
+    } catch (error) {
+      setMissionOverlay(null);
+      setMissionError(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  const handleStartMission = async () => {
+    setIsMissionBusy(true);
+    setMissionError("");
+    try {
+      const nextMission = await startArchitectureMission(archiveDraft.projectId, 12);
+      if (nextMission.project_id !== activeProjectIdRef.current) return;
+      setMission(nextMission);
+      await refreshMissionOverlay(nextMission);
+      notify(String(copy[locale].missionReady));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setMissionError(message);
+      notify(`${copy[locale].missionError}: ${message}`);
+    } finally {
+      setIsMissionBusy(false);
+    }
+  };
+
+  const handleMissionStatusChange = async (action: "pause" | "resume" | "stop") => {
+    if (!mission || isMissionTerminal(mission)) return;
+    setIsMissionBusy(true);
+    setMissionError("");
+    try {
+      const nextMission = await updateMissionStatus(mission.id, action);
+      if (nextMission.project_id !== activeProjectIdRef.current) return;
+      setMission(nextMission);
+      await refreshMissionOverlay(nextMission);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setMissionError(message);
+      notify(`${copy[locale].missionError}: ${message}`);
+    } finally {
+      setIsMissionBusy(false);
+    }
+  };
+
   return (
     <div className="app-shell">
       <AppHeader
@@ -2195,10 +2492,25 @@ export function App() {
           </div>
         </>
       ) : activePage === "graph" ? (
-        <GraphExplorerPage archiveDraft={archiveDraft} locale={locale} />
+        <GraphExplorerPage
+          archiveDraft={archiveDraft}
+          locale={locale}
+          missionOverlay={mission?.project_id === archiveDraft.projectId ? missionOverlay : null}
+          onOpenMission={() => setActivePage("agents")}
+        />
       ) : (
         <div className="agent-analysis-page">
           <div className="agent-analysis-main">
+            <MissionControlPanel
+              error={missionError}
+              isBusy={isMissionBusy}
+              locale={locale}
+              mission={mission?.project_id === archiveDraft.projectId ? mission : null}
+              onPause={() => handleMissionStatusChange("pause")}
+              onResume={() => handleMissionStatusChange("resume")}
+              onStart={handleStartMission}
+              onStop={() => handleMissionStatusChange("stop")}
+            />
             <AgentPipelinePanel
               jobMessage={agentJobMessage}
               jobProgress={agentJobProgress}

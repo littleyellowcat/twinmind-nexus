@@ -1857,7 +1857,7 @@ git commit -m "feat: add graph explorer page"
 - Modify: `frontend/src/App.tsx`
 - Modify: `frontend/src/styles.css`
 
-- [ ] **Step 1: Import graph API methods and types**
+- [x] **Step 1: Import graph API methods and types**
 
 Modify imports in `frontend/src/App.tsx`:
 
@@ -1884,7 +1884,7 @@ Add types:
   GraphSummary,
 ```
 
-- [ ] **Step 2: Replace GraphExplorerPage shell with stateful implementation**
+- [x] **Step 2: Replace GraphExplorerPage shell with stateful implementation**
 
 Replace `GraphExplorerPage` with:
 
@@ -2012,7 +2012,7 @@ function GraphExplorerPage({
 }
 ```
 
-- [ ] **Step 3: Add drawer and canvas components**
+- [x] **Step 3: Add drawer and canvas components**
 
 Add these components after `GraphExplorerPage`:
 
@@ -2151,7 +2151,7 @@ function layoutGraph(nodes: GraphExplorerNode[]) {
 }
 ```
 
-- [ ] **Step 4: Add graph explorer interaction styles**
+- [x] **Step 4: Add graph explorer interaction styles**
 
 Append to `frontend/src/styles.css`:
 
@@ -2264,7 +2264,7 @@ Append to `frontend/src/styles.css`:
 }
 ```
 
-- [ ] **Step 5: Run frontend build**
+- [x] **Step 5: Run frontend build**
 
 Run:
 
@@ -2274,7 +2274,7 @@ cd frontend && npm run build
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit real graph explorer interactions**
+- [x] **Step 6: Commit real graph explorer interactions**
 
 Run:
 
@@ -2289,7 +2289,7 @@ git commit -m "feat: add interactive graph explorer"
 - Modify: `frontend/src/App.tsx`
 - Modify: `frontend/src/styles.css`
 
-- [ ] **Step 1: Import mission API methods and type**
+- [x] **Step 1: Import mission API methods and type**
 
 Modify `frontend/src/App.tsx` imports:
 
@@ -2312,7 +2312,7 @@ import {
 
 Add `AutonomousMission` to type imports.
 
-- [ ] **Step 2: Add mission state to GraphExplorerPage**
+- [x] **Step 2: Add mission state to GraphExplorerPage**
 
 Inside `GraphExplorerPage`, add:
 
@@ -2353,7 +2353,7 @@ Replace mission toolbar button:
 </button>
 ```
 
-- [ ] **Step 3: Render mission playback panel**
+- [x] **Step 3: Render mission playback panel**
 
 Inside `graph-explorer-shell`, before status:
 
@@ -2418,7 +2418,7 @@ function MissionPlayback({
 }
 ```
 
-- [ ] **Step 4: Add mission overlay to graph canvas**
+- [x] **Step 4: Add mission overlay to graph canvas**
 
 Pass `mission?.graph_overlay ?? null` to `GraphExplorerCanvas`.
 
@@ -2442,7 +2442,7 @@ const isExplored = missionOverlay?.explored_node_ids.includes(node.id);
 className={`explorer-node ${node.id === focusedEntityId ? "is-focused" : ""} ${isExplored ? "is-agent-explored" : ""}`}
 ```
 
-- [ ] **Step 5: Add mission playback styles**
+- [x] **Step 5: Add mission playback styles**
 
 Append to `frontend/src/styles.css`:
 
@@ -2512,7 +2512,7 @@ Append to `frontend/src/styles.css`:
 }
 ```
 
-- [ ] **Step 6: Run frontend build**
+- [x] **Step 6: Run frontend build**
 
 Run:
 
@@ -2522,7 +2522,7 @@ cd frontend && npm run build
 
 Expected: PASS.
 
-- [ ] **Step 7: Commit mission playback UI**
+- [x] **Step 7: Commit mission playback UI**
 
 Run:
 
