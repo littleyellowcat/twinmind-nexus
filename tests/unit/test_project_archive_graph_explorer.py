@@ -9,6 +9,7 @@ from src.project_archive.graph_explorer import (
 from src.project_archive.types import (
     ArchiveHall,
     EvidenceCard,
+    GraphNeighborhood,
     ProjectArchiveDraft,
     ProjectEntity,
     ProjectRelation,
@@ -203,3 +204,54 @@ def test_focus_entity_centers_one_hop_neighbors() -> None:
         "rel:defines",
         "rel:configures",
     }
+
+
+def test_node_limit_zero_returns_no_visible_graph() -> None:
+    neighborhood = build_graph_neighborhood(
+        _draft(),
+        hall_id=None,
+        focus_entity_id="class:ArchiveBuilder",
+        depth=1,
+        relation_types=[],
+        node_limit=0,
+        relation_limit=20,
+    )
+
+    assert neighborhood.nodes == []
+    assert neighborhood.relations == []
+    assert neighborhood.is_sparse is True
+
+
+def test_relation_type_filter_strips_whitespace_and_ignores_case() -> None:
+    neighborhood = build_graph_neighborhood(
+        _draft(),
+        hall_id="hall_config",
+        focus_entity_id=None,
+        depth=1,
+        relation_types=[" configures "],
+        node_limit=20,
+        relation_limit=20,
+    )
+
+    assert {relation.id for relation in neighborhood.relations} == {"rel:configures"}
+    assert {node.id for node in neighborhood.nodes} == {
+        "class:ArchiveBuilder",
+        "config:llm",
+    }
+
+
+def test_graph_neighborhood_serialization_round_trip() -> None:
+    neighborhood = build_graph_neighborhood(
+        _draft(),
+        hall_id="hall_config",
+        focus_entity_id=None,
+        depth=1,
+        relation_types=[],
+        node_limit=20,
+        relation_limit=20,
+    )
+
+    restored = GraphNeighborhood.from_dict(neighborhood.to_dict())
+
+    assert restored == neighborhood
+    assert restored.to_dict() == neighborhood.to_dict()

@@ -126,7 +126,19 @@ def build_graph_neighborhood(
     entity_by_id = {entity.id: entity for entity in draft.entities}
     hall_by_id = {hall.id: hall for hall in draft.halls}
     hall_ids_by_entity = _hall_ids_by_entity(draft)
-    relation_types_filter = {item.upper() for item in relation_types}
+    relation_types_filter = {
+        item.strip().upper() for item in relation_types if item.strip()
+    }
+
+    if safe_node_limit == 0:
+        return _sparse_neighborhood(
+            draft=draft,
+            hall_id=hall_id,
+            focus_entity_id=focus_entity_id,
+            depth=safe_depth,
+            reason="Node limit is zero.",
+        )
+
     candidate_relations = [
         relation
         for relation in draft.relations
@@ -233,11 +245,12 @@ def build_graph_neighborhood(
         )
         if entity_id in entity_by_id and final_degrees.get(entity_id, 0) > 0
     ]
+    serialized_node_ids = {node.id for node in nodes}
     relations = [
-        _graph_relation(relation, draft)
+        _graph_relation(relation, hall_ids_by_entity)
         for relation in selected_relations
-        if relation.source_id in {node.id for node in nodes}
-        and relation.target_id in {node.id for node in nodes}
+        if relation.source_id in serialized_node_ids
+        and relation.target_id in serialized_node_ids
     ]
 
     return GraphNeighborhood(
@@ -331,7 +344,7 @@ def _graph_node(
 
 def _graph_relation(
     relation: ProjectRelation,
-    draft: ProjectArchiveDraft,
+    hall_ids_by_entity: dict[str, list[str]],
 ) -> GraphExplorerRelation:
     return GraphExplorerRelation(
         id=relation.id,
@@ -339,7 +352,7 @@ def _graph_relation(
         target_id=relation.target_id,
         type=relation.type,
         evidence_ids=list(relation.evidence_ids),
-        hall_ids=_relation_hall_ids(relation, draft),
+        hall_ids=_relation_hall_ids(relation, hall_ids_by_entity),
         weight=max(1.0, float(len(relation.evidence_ids))),
     )
 
@@ -390,14 +403,12 @@ def _hall_ids_by_entity(draft: ProjectArchiveDraft) -> dict[str, list[str]]:
 
 def _relation_hall_ids(
     relation: ProjectRelation,
-    draft: ProjectArchiveDraft,
+    hall_ids_by_entity: dict[str, list[str]],
 ) -> list[str]:
-    hall_ids = [
-        hall.id
-        for hall in draft.halls
-        if relation.source_id in hall.entity_ids or relation.target_id in hall.entity_ids
-    ]
-    return sorted(hall_ids)
+    return sorted(
+        set(hall_ids_by_entity.get(relation.source_id, []))
+        | set(hall_ids_by_entity.get(relation.target_id, []))
+    )
 
 
 def _evidence_ids(

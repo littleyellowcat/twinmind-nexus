@@ -248,6 +248,10 @@ class GraphExplorerNode:
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> GraphExplorerNode:
+        return cls(**data)
+
 
 @dataclass(frozen=True)
 class GraphExplorerRelation:
@@ -262,6 +266,10 @@ class GraphExplorerRelation:
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> GraphExplorerRelation:
+        return cls(**data)
+
 
 @dataclass(frozen=True)
 class RecommendedGraphStart:
@@ -274,6 +282,10 @@ class RecommendedGraphStart:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> RecommendedGraphStart:
+        return cls(**data)
 
 
 @dataclass(frozen=True)
@@ -290,6 +302,19 @@ class GraphSummary:
                 start.to_dict() for start in self.recommended_starts
             ],
         }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> GraphSummary:
+        return cls(
+            project_id=data["project_id"],
+            metrics={key: int(value) for key, value in data.get("metrics", {}).items()},
+            recommended_starts=[
+                RecommendedGraphStart.from_dict(start)
+                if isinstance(start, dict)
+                else start
+                for start in data.get("recommended_starts", [])
+            ],
+        )
 
 
 @dataclass(frozen=True)
@@ -316,3 +341,25 @@ class GraphNeighborhood:
             "is_sparse": self.is_sparse,
             "sparse_reason": self.sparse_reason,
         }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> GraphNeighborhood:
+        return cls(
+            project_id=data["project_id"],
+            hall_id=data.get("hall_id"),
+            focus_entity_id=data.get("focus_entity_id"),
+            depth=int(data.get("depth", 1)),
+            nodes=[
+                GraphExplorerNode.from_dict(node) if isinstance(node, dict) else node
+                for node in data.get("nodes", [])
+            ],
+            relations=[
+                GraphExplorerRelation.from_dict(relation)
+                if isinstance(relation, dict)
+                else relation
+                for relation in data.get("relations", [])
+            ],
+            evidence_ids=list(data.get("evidence_ids", [])),
+            is_sparse=bool(data.get("is_sparse", False)),
+            sparse_reason=data.get("sparse_reason"),
+        )
