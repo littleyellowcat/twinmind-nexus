@@ -172,3 +172,147 @@ class AgentResult:
             for path in payload.get("graph_paths", [])
         ]
         return cls(**payload)
+
+
+@dataclass(frozen=True)
+class AgentRoleResult:
+    agent: str
+    status: str
+    summary: str
+    evidence_card_ids: list[str] = field(default_factory=list)
+    entity_ids: list[str] = field(default_factory=list)
+    relation_ids: list[str] = field(default_factory=list)
+    findings: list[dict[str, Any]] = field(default_factory=list)
+    risks: list[dict[str, Any]] = field(default_factory=list)
+    next_actions: list[str] = field(default_factory=list)
+    confidence: float = 0.0
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> AgentRoleResult:
+        return cls(**data)
+
+
+@dataclass(frozen=True)
+class ProjectAgentReport:
+    project_id: str
+    status: str
+    provider: str
+    model: str | None
+    created_at: str
+    scan_profile: str
+    agents: dict[str, AgentRoleResult] = field(default_factory=dict)
+    errors: list[str] = field(default_factory=list)
+    metrics: dict[str, int] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        data = asdict(self)
+        data["agents"] = {
+            name: result.to_dict() for name, result in self.agents.items()
+        }
+        return data
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ProjectAgentReport:
+        return cls(
+            project_id=data["project_id"],
+            status=data.get("status", "unknown"),
+            provider=data.get("provider", "rules"),
+            model=data.get("model"),
+            created_at=data.get("created_at", ""),
+            scan_profile=data.get("scan_profile", "architecture"),
+            agents={
+                name: AgentRoleResult.from_dict(result)
+                for name, result in data.get("agents", {}).items()
+            },
+            errors=list(data.get("errors", [])),
+            metrics={key: int(value) for key, value in data.get("metrics", {}).items()},
+        )
+
+
+@dataclass(frozen=True)
+class GraphExplorerNode:
+    id: str
+    label: str
+    type: str
+    hall_ids: list[str] = field(default_factory=list)
+    source_path: str | None = None
+    evidence_ids: list[str] = field(default_factory=list)
+    degree: int = 0
+    importance: float = 0.0
+    tags: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class GraphExplorerRelation:
+    id: str
+    source_id: str
+    target_id: str
+    type: str
+    evidence_ids: list[str] = field(default_factory=list)
+    hall_ids: list[str] = field(default_factory=list)
+    weight: float = 1.0
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class RecommendedGraphStart:
+    entity_id: str
+    label: str
+    group: str
+    reason: str
+    score: float
+    hall_ids: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class GraphSummary:
+    project_id: str
+    metrics: dict[str, int]
+    recommended_starts: list[RecommendedGraphStart] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "project_id": self.project_id,
+            "metrics": dict(self.metrics),
+            "recommended_starts": [
+                start.to_dict() for start in self.recommended_starts
+            ],
+        }
+
+
+@dataclass(frozen=True)
+class GraphNeighborhood:
+    project_id: str
+    hall_id: str | None
+    focus_entity_id: str | None
+    depth: int
+    nodes: list[GraphExplorerNode] = field(default_factory=list)
+    relations: list[GraphExplorerRelation] = field(default_factory=list)
+    evidence_ids: list[str] = field(default_factory=list)
+    is_sparse: bool = False
+    sparse_reason: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "project_id": self.project_id,
+            "hall_id": self.hall_id,
+            "focus_entity_id": self.focus_entity_id,
+            "depth": self.depth,
+            "nodes": [node.to_dict() for node in self.nodes],
+            "relations": [relation.to_dict() for relation in self.relations],
+            "evidence_ids": list(self.evidence_ids),
+            "is_sparse": self.is_sparse,
+            "sparse_reason": self.sparse_reason,
+        }
