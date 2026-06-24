@@ -57,8 +57,33 @@ def run_architecture_mission(
 
     mission_id = str(uuid4())
     created_at = _utc_now()
-    safe_max_steps = max(1, int(max_steps))
-    selected_specs = TASK_SPECS[:safe_max_steps]
+    requested_max_steps = int(max_steps)
+
+    if requested_max_steps <= 0:
+        completed_at = _utc_now()
+        return AutonomousMission(
+            id=mission_id,
+            project_id=draft.project_id,
+            goal=ARCHITECTURE_GOAL,
+            status="complete",
+            max_steps=requested_max_steps,
+            stop_reason="invalid_step_budget",
+            created_at=created_at,
+            completed_at=completed_at,
+            tasks=[],
+            graph_overlay=MissionGraphOverlay(
+                mission_id=mission_id,
+                annotations=[
+                    {
+                        "type": "no_tasks_run",
+                        "reason": "max_steps must be greater than zero.",
+                        "max_steps": requested_max_steps,
+                    }
+                ],
+            ),
+        )
+
+    selected_specs = TASK_SPECS[:requested_max_steps]
 
     tasks: list[MissionTask] = []
     explored_node_ids: set[str] = set()
@@ -68,6 +93,7 @@ def run_architecture_mission(
     annotations: list[dict[str, object]] = []
 
     for index, spec in enumerate(selected_specs, start=1):
+        task_created_at = _utc_now()
         entities = _entities_for_task(draft, spec.task_type)
         relations = _relations_for_entities(draft, [entity.id for entity in entities])
         entity_ids = [entity.id for entity in entities]
@@ -96,28 +122,28 @@ def run_architecture_mission(
             risks=risks,
             confidence=0.78 if evidence_ids else 0.42,
             verifier_status="accepted" if evidence_ids else "uncertain",
-            created_at=created_at,
+            created_at=task_created_at,
             completed_at=completed_at,
         )
         tasks.append(task)
 
         explored_node_ids.update(entity_ids)
         explored_relation_ids.update(relation_ids)
-        if risks:
-            risk_node_ids.update(entity_ids)
-            risk_relation_ids.update(relation_ids)
+        risk_node_ids.update(_risk_ids(risks, "node_ids"))
+        risk_relation_ids.update(_risk_ids(risks, "relation_ids"))
         annotations.append(
             {
                 "task_id": task.id,
                 "title": spec.title,
                 "entity_ids": entity_ids,
                 "relation_ids": relation_ids,
+                "risks": risks,
             }
         )
 
     stop_reason = (
         "max_steps_reached"
-        if len(TASK_SPECS) >= safe_max_steps
+        if requested_max_steps < len(TASK_SPECS)
         else "architecture_tasks_complete"
     )
     completed_at = _utc_now()
@@ -127,7 +153,7 @@ def run_architecture_mission(
         project_id=draft.project_id,
         goal=ARCHITECTURE_GOAL,
         status="complete",
-        max_steps=safe_max_steps,
+        max_steps=requested_max_steps,
         stop_reason=stop_reason,
         created_at=created_at,
         completed_at=completed_at,
@@ -221,6 +247,15 @@ def _risks_for_task(
             "relation_count": len(draft.relations),
         }
     ]
+
+
+def _risk_ids(risks: list[dict[str, object]], key: str) -> list[str]:
+    ids: list[str] = []
+    for risk in risks:
+        values = risk.get(key, [])
+        if isinstance(values, list):
+            ids.extend(str(value) for value in values)
+    return ids
 
 
 def _utc_now() -> str:

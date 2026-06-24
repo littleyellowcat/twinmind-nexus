@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from tests.unit.test_project_archive_graph_explorer import _draft
 
-from src.project_archive.autonomous_mission import run_architecture_mission
+from src.project_archive.autonomous_mission import TASK_SPECS, run_architecture_mission
 from src.project_archive.types import ProjectArchiveDraft, ProjectEntity, ProjectRelation
 
 
@@ -32,6 +32,53 @@ def test_architecture_mission_respects_max_steps() -> None:
 
     assert len(mission.tasks) == 2
     assert mission.stop_reason == "max_steps_reached"
+
+
+def test_architecture_mission_records_zero_step_budget() -> None:
+    mission = run_architecture_mission(_draft(), max_steps=0)
+
+    assert mission.max_steps == 0
+    assert mission.tasks == []
+    assert mission.status == "complete"
+    assert mission.stop_reason == "invalid_step_budget"
+    assert mission.graph_overlay is not None
+    assert mission.graph_overlay.explored_node_ids == []
+    assert mission.graph_overlay.explored_relation_ids == []
+    assert mission.graph_overlay.risk_node_ids == []
+    assert mission.graph_overlay.risk_relation_ids == []
+    assert mission.graph_overlay.annotations[0]["type"] == "no_tasks_run"
+
+
+def test_architecture_mission_records_negative_step_budget() -> None:
+    mission = run_architecture_mission(_draft(), max_steps=-3)
+
+    assert mission.max_steps == -3
+    assert mission.tasks == []
+    assert mission.stop_reason == "invalid_step_budget"
+    assert mission.graph_overlay is not None
+    assert mission.graph_overlay.annotations[0]["max_steps"] == -3
+
+
+def test_architecture_mission_bounds_large_step_budget_to_task_specs() -> None:
+    mission = run_architecture_mission(_draft(), max_steps=99)
+
+    assert mission.max_steps == 99
+    assert len(mission.tasks) == len(TASK_SPECS)
+    assert len(mission.tasks) == 9
+    assert mission.stop_reason == "architecture_tasks_complete"
+
+
+def test_architecture_mission_keeps_graph_level_risks_in_annotations() -> None:
+    mission = run_architecture_mission(_draft(), max_steps=7)
+
+    assert mission.graph_overlay is not None
+    assert mission.graph_overlay.risk_node_ids == []
+    assert mission.graph_overlay.risk_relation_ids == []
+    assert any(
+        risk["type"] == "sparse_relation_coverage"
+        for annotation in mission.graph_overlay.annotations
+        for risk in annotation.get("risks", [])
+    )
 
 
 def test_architecture_mission_caps_recommended_entry_points() -> None:
