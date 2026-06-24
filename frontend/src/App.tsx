@@ -57,6 +57,7 @@ type ScopeMode = "architecture_tour" | "impact_analysis" | "risk_audit" | "evide
 type ScanProfile = "architecture" | "full" | "docs" | "tests";
 type AppPage = "overview" | "graph" | "agents";
 type GraphTone = "accent" | "blue" | "amber" | "violet";
+type MissionAction = "start" | "pause" | "resume" | "stop" | null;
 type JobHistoryItem = {
   id: string;
   label: string;
@@ -122,6 +123,9 @@ const copy = {
     autonomousMission: "自主架构任务",
     startMission: "启动架构任务",
     missionStarting: "任务启动中",
+    missionPausing: "正在暂停",
+    missionResuming: "正在继续",
+    missionStopping: "正在停止",
     missionReady: "任务已完成",
     missionRunning: "任务运行中",
     missionPaused: "任务已暂停",
@@ -258,6 +262,9 @@ const copy = {
     autonomousMission: "Autonomous architecture mission",
     startMission: "Start architecture mission",
     missionStarting: "Starting mission",
+    missionPausing: "Pausing",
+    missionResuming: "Resuming",
+    missionStopping: "Stopping",
     missionReady: "Mission complete",
     missionRunning: "Mission running",
     missionPaused: "Mission paused",
@@ -2023,24 +2030,25 @@ function TaskHistoryPanel({
 
 function MissionControlPanel({
   error,
-  isBusy,
   locale,
   mission,
+  missionAction,
   onPause,
   onResume,
   onStart,
   onStop,
 }: {
   error: string;
-  isBusy: boolean;
   locale: Locale;
   mission: AutonomousMission | null;
+  missionAction: MissionAction;
   onPause: () => void;
   onResume: () => void;
   onStart: () => void;
   onStop: () => void;
 }) {
   const t = copy[locale];
+  const isBusy = Boolean(missionAction);
   const completedCount = mission?.tasks.filter((task) => ["completed", "complete"].includes(task.status)).length ?? 0;
   const terminal = isMissionTerminal(mission);
   const canPause = Boolean(mission && !terminal && mission.status !== "paused" && !isBusy);
@@ -2063,19 +2071,19 @@ function MissionControlPanel({
           <span className={`pipeline-status ${mission?.status ?? "pending"}`}>{statusText}</span>
           <button className="primary-button compact" disabled={isBusy} onClick={onStart} type="button">
             <Sparkles size={14} />
-            {isBusy ? t.missionStarting : t.startMission}
+            {missionAction === "start" ? t.missionStarting : t.startMission}
           </button>
           <button className="secondary-action compact" disabled={!canPause} onClick={onPause} type="button">
             <CircleDot size={14} />
-            {t.pauseMission}
+            {missionAction === "pause" ? t.missionPausing : t.pauseMission}
           </button>
           <button className="secondary-action compact" disabled={!canResume} onClick={onResume} type="button">
             <Sparkles size={14} />
-            {t.resumeMission}
+            {missionAction === "resume" ? t.missionResuming : t.resumeMission}
           </button>
           <button className="secondary-action compact danger" disabled={!canStop} onClick={onStop} type="button">
             <X size={14} />
-            {t.stopMission}
+            {missionAction === "stop" ? t.missionStopping : t.stopMission}
           </button>
         </div>
       </div>
@@ -2152,7 +2160,7 @@ export function App() {
   const [mission, setMission] = useState<AutonomousMission | null>(null);
   const [missionOverlay, setMissionOverlay] = useState<MissionGraphOverlay | null>(null);
   const [missionError, setMissionError] = useState("");
-  const [isMissionBusy, setIsMissionBusy] = useState(false);
+  const [missionAction, setMissionAction] = useState<MissionAction>(null);
   const [archiveIds, setArchiveIds] = useState<string[]>([fallbackArchiveDraft.projectId]);
   const [isFallbackArchive, setIsFallbackArchive] = useState(true);
   const [isLoadingArchive, setIsLoadingArchive] = useState(true);
@@ -2179,10 +2187,16 @@ export function App() {
   const [selectedEvidenceId, setSelectedEvidenceId] = useState("");
   const [notice, setNotice] = useState("");
   const activeProjectIdRef = useRef(archiveDraft.projectId);
+  const activeMissionIdRef = useRef<string | null>(null);
+  const missionActionRef = useRef<MissionAction>(null);
 
   useEffect(() => {
     activeProjectIdRef.current = archiveDraft.projectId;
   }, [archiveDraft.projectId]);
+
+  useEffect(() => {
+    activeMissionIdRef.current = mission?.id ?? null;
+  }, [mission?.id]);
 
   useEffect(() => {
     let isMounted = true;
@@ -2255,12 +2269,15 @@ export function App() {
   };
 
   const resetArchiveView = (draft: ArchiveDraft, report: ProjectAgentReport | null = null) => {
+    activeProjectIdRef.current = draft.projectId;
+    activeMissionIdRef.current = null;
+    missionActionRef.current = null;
     setArchiveDraft(draft);
     setAgentReport(report);
     setMission(null);
     setMissionOverlay(null);
     setMissionError("");
-    setIsMissionBusy(false);
+    setMissionAction(null);
     setSelectedArchiveId(draft.projectId);
     setSelectedHallId(draft.halls[0]?.id ?? fallbackArchiveDraft.halls[0].id);
     setSelectedRelationId("");
@@ -2361,25 +2378,39 @@ export function App() {
   };
 
   const refreshMissionOverlay = async (nextMission: AutonomousMission) => {
-    if (nextMission.project_id !== activeProjectIdRef.current) return;
+    const requestedMissionId = nextMission.id;
+    if (nextMission.project_id !== activeProjectIdRef.current || requestedMissionId !== activeMissionIdRef.current) return;
     if (nextMission.graph_overlay) {
-      setMissionOverlay(nextMission.graph_overlay);
+      setMissionOverlay(nextMission.graph_overlay.mission_id === requestedMissionId ? nextMission.graph_overlay : null);
       return;
     }
     try {
-      setMissionOverlay(await fetchMissionGraphOverlay(nextMission.id));
+      const nextOverlay = await fetchMissionGraphOverlay(requestedMissionId);
+      if (
+        nextMission.project_id === activeProjectIdRef.current &&
+        requestedMissionId === activeMissionIdRef.current &&
+        nextOverlay.mission_id === requestedMissionId
+      ) {
+        setMissionOverlay(nextOverlay);
+      }
     } catch (error) {
+      if (requestedMissionId !== activeMissionIdRef.current) return;
       setMissionOverlay(null);
       setMissionError(error instanceof Error ? error.message : String(error));
     }
   };
 
   const handleStartMission = async () => {
-    setIsMissionBusy(true);
+    if (missionActionRef.current) return;
+    missionActionRef.current = "start";
+    setMissionAction("start");
+    activeMissionIdRef.current = null;
+    setMissionOverlay(null);
     setMissionError("");
     try {
       const nextMission = await startArchitectureMission(archiveDraft.projectId, 12);
       if (nextMission.project_id !== activeProjectIdRef.current) return;
+      activeMissionIdRef.current = nextMission.id;
       setMission(nextMission);
       await refreshMissionOverlay(nextMission);
       notify(String(copy[locale].missionReady));
@@ -2388,17 +2419,25 @@ export function App() {
       setMissionError(message);
       notify(`${copy[locale].missionError}: ${message}`);
     } finally {
-      setIsMissionBusy(false);
+      if (missionActionRef.current === "start") {
+        missionActionRef.current = null;
+        setMissionAction(null);
+      }
     }
   };
 
   const handleMissionStatusChange = async (action: "pause" | "resume" | "stop") => {
-    if (!mission || isMissionTerminal(mission)) return;
-    setIsMissionBusy(true);
+    if (missionActionRef.current || !mission) return;
+    if (action === "pause" && (isMissionTerminal(mission) || mission.status === "paused")) return;
+    if (action === "resume" && mission.status !== "paused") return;
+    if (action === "stop" && isMissionTerminal(mission)) return;
+    missionActionRef.current = action;
+    setMissionAction(action);
     setMissionError("");
     try {
       const nextMission = await updateMissionStatus(mission.id, action);
       if (nextMission.project_id !== activeProjectIdRef.current) return;
+      activeMissionIdRef.current = nextMission.id;
       setMission(nextMission);
       await refreshMissionOverlay(nextMission);
     } catch (error) {
@@ -2406,7 +2445,10 @@ export function App() {
       setMissionError(message);
       notify(`${copy[locale].missionError}: ${message}`);
     } finally {
-      setIsMissionBusy(false);
+      if (missionActionRef.current === action) {
+        missionActionRef.current = null;
+        setMissionAction(null);
+      }
     }
   };
 
@@ -2495,7 +2537,11 @@ export function App() {
         <GraphExplorerPage
           archiveDraft={archiveDraft}
           locale={locale}
-          missionOverlay={mission?.project_id === archiveDraft.projectId ? missionOverlay : null}
+          missionOverlay={
+            mission?.project_id === archiveDraft.projectId && missionOverlay?.mission_id === mission.id
+              ? missionOverlay
+              : null
+          }
           onOpenMission={() => setActivePage("agents")}
         />
       ) : (
@@ -2503,9 +2549,9 @@ export function App() {
           <div className="agent-analysis-main">
             <MissionControlPanel
               error={missionError}
-              isBusy={isMissionBusy}
               locale={locale}
               mission={mission?.project_id === archiveDraft.projectId ? mission : null}
+              missionAction={missionAction}
               onPause={() => handleMissionStatusChange("pause")}
               onResume={() => handleMissionStatusChange("resume")}
               onStart={handleStartMission}

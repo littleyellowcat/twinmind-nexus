@@ -2312,115 +2312,37 @@ import {
 
 Add `AutonomousMission` to type imports.
 
-- [x] **Step 2: Add mission state to GraphExplorerPage**
+- [x] **Step 2: Add lifted mission state and guarded handlers**
 
-Inside `GraphExplorerPage`, add:
+Implemented mission state in `App` rather than inside `GraphExplorerPage` so the same autonomous mission can be shown on the Agent page and projected onto the Graph Explorer overlay. The state tracks:
 
-```tsx
-  const [mission, setMission] = useState<AutonomousMission | null>(null);
-  const [isMissionRunning, setIsMissionRunning] = useState(false);
-```
+- `mission`
+- `missionOverlay`
+- `missionError`
+- `missionAction`
 
-Add handler:
+The handlers call the real mission API:
 
-```tsx
-  const runMission = async () => {
-    setIsMissionRunning(true);
-    setError("");
-    try {
-      const nextMission = await startArchitectureMission(archiveDraft.projectId, 12);
-      setMission(nextMission);
-    } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : String(nextError));
-    } finally {
-      setIsMissionRunning(false);
-    }
-  };
+- `startArchitectureMission(projectId, 12)`
+- `updateMissionStatus(mission.id, "pause" | "resume" | "stop")`
+- `fetchMissionGraphOverlay(mission.id)` when needed
 
-  const changeMissionStatus = async (action: "pause" | "resume" | "stop") => {
-    if (!mission) return;
-    const nextMission = await updateMissionStatus(mission.id, action);
-    setMission(nextMission);
-  };
-```
+The implementation also clears mission state on archive changes and guards against stale project/mission overlay responses.
 
-Replace mission toolbar button:
+- [x] **Step 3: Render mission playback panel on Agent analysis page**
 
-```tsx
-<button className="secondary-action" disabled={isMissionRunning} onClick={runMission} type="button">
-  <Sparkles size={15} />
-  {isMissionRunning ? (locale === "zh" ? "运行中" : "Running") : t.missionControl}
-</button>
-```
+Implemented `MissionControlPanel` and `MissionTaskCard` in the Agent analysis page. This keeps the dedicated Graph Explorer canvas readable while the Agent page owns the autonomous task queue and report-like playback.
 
-- [x] **Step 3: Render mission playback panel**
+The panel displays:
 
-Inside `graph-explorer-shell`, before status:
-
-```tsx
-{mission ? (
-  <MissionPlayback
-    locale={locale}
-    mission={mission}
-    onPause={() => changeMissionStatus("pause")}
-    onResume={() => changeMissionStatus("resume")}
-    onStop={() => changeMissionStatus("stop")}
-  />
-) : null}
-```
-
-Add component:
-
-```tsx
-function MissionPlayback({
-  locale,
-  mission,
-  onPause,
-  onResume,
-  onStop,
-}: {
-  locale: Locale;
-  mission: AutonomousMission;
-  onPause: () => void;
-  onResume: () => void;
-  onStop: () => void;
-}) {
-  return (
-    <section className="mission-playback">
-      <div className="mission-playback-head">
-        <div>
-          <span className="eyebrow">{copy[locale].missionControl}</span>
-          <strong>{mission.goal}</strong>
-        </div>
-        <div className="mission-actions">
-          <button className="icon-button" onClick={onPause} title="Pause" type="button">
-            <CircleDot size={14} />
-          </button>
-          <button className="icon-button" onClick={onResume} title="Resume" type="button">
-            <Sparkles size={14} />
-          </button>
-          <button className="icon-button" onClick={onStop} title="Stop" type="button">
-            <X size={14} />
-          </button>
-        </div>
-      </div>
-      <div className="mission-task-list">
-        {mission.tasks.map((task, index) => (
-          <div className="mission-task" key={task.id}>
-            <span>{index + 1}</span>
-            <strong>{task.title}</strong>
-            <small>{task.agent} · {task.verifier_status} · {Math.round(task.confidence * 100)}%</small>
-          </div>
-        ))}
-      </div>
-    </section>
-  );
-}
-```
+- mission id, goal, status, stop reason, max steps, completed task count
+- start / pause / resume / stop controls with honest disabled states
+- action-specific busy labels for start, pause, resume, and stop
+- a scrollable task timeline with agent, task type, status, verifier status, confidence, evidence count, entity count, findings, and risks
 
 - [x] **Step 4: Add mission overlay to graph canvas**
 
-Pass `mission?.graph_overlay ?? null` to `GraphExplorerCanvas`.
+Pass the active `missionOverlay` to `GraphExplorerPage` and `GraphExplorerCanvas` only when the overlay `mission_id` matches the current mission id.
 
 Extend props:
 
@@ -2432,85 +2354,21 @@ Change edge class:
 
 ```tsx
 const isExplored = missionOverlay?.explored_relation_ids.includes(relation.id);
-className={`explorer-edge ${isSelected ? "is-selected" : ""} ${isConnectedToFocus ? "is-focus-edge" : ""} ${isExplored ? "is-agent-explored" : ""}`}
+const isRisk = missionOverlay?.risk_relation_ids.includes(relation.id);
+className={`explorer-edge ${isSelected ? "is-selected" : ""} ${isConnectedToFocus ? "is-focus-edge" : ""} ${isExplored ? "is-agent-explored" : ""} ${isRisk ? "is-agent-risk" : ""}`}
 ```
 
 Change node class:
 
 ```tsx
 const isExplored = missionOverlay?.explored_node_ids.includes(node.id);
-className={`explorer-node ${node.id === focusedEntityId ? "is-focused" : ""} ${isExplored ? "is-agent-explored" : ""}`}
+const isRisk = missionOverlay?.risk_node_ids.includes(node.id);
+className={`explorer-node ${node.id === focusedEntityId ? "is-focused" : ""} ${isExplored ? "is-agent-explored" : ""} ${isRisk ? "is-agent-risk" : ""}`}
 ```
 
 - [x] **Step 5: Add mission playback styles**
 
-Append to `frontend/src/styles.css`:
-
-```css
-.mission-playback {
-  position: absolute;
-  z-index: 6;
-  left: 50%;
-  bottom: 56px;
-  width: min(620px, calc(100% - 32px));
-  max-height: 260px;
-  overflow: auto;
-  transform: translateX(-50%);
-  border: 1px solid rgba(53, 208, 186, 0.34);
-  border-radius: 8px;
-  padding: 12px;
-  background: rgba(8, 13, 20, 0.88);
-  backdrop-filter: blur(16px);
-}
-
-.mission-playback-head,
-.mission-actions {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-}
-
-.mission-task-list {
-  display: grid;
-  gap: 8px;
-  margin-top: 10px;
-}
-
-.mission-task {
-  display: grid;
-  grid-template-columns: 26px minmax(0, 1fr) auto;
-  gap: 8px;
-  align-items: center;
-  border: 1px solid rgba(59, 77, 99, 0.5);
-  border-radius: 8px;
-  padding: 8px;
-  color: var(--muted);
-  background: rgba(13, 23, 36, 0.78);
-}
-
-.mission-task strong {
-  min-width: 0;
-  overflow: hidden;
-  color: var(--text);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.mission-task small {
-  color: var(--subtle);
-}
-
-.explorer-edge.is-agent-explored {
-  stroke: rgba(148, 126, 255, 0.74);
-  stroke-width: 2.6;
-}
-
-.explorer-node.is-agent-explored circle {
-  stroke: rgba(148, 126, 255, 0.95);
-  stroke-width: 2.4;
-}
-```
+Added styles for `MissionControlPanel`, scrollable mission task cards, mission error/meta areas, action buttons, and graph overlay classes for explored/risk nodes and relations.
 
 - [x] **Step 6: Run frontend build**
 
