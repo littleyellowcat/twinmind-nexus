@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from uuid import uuid4
@@ -153,7 +154,7 @@ def _entities_for_task(
             start.entity_id
             for start in summary.recommended_starts
             if start.group == "entry_file" and start.entity_id in entity_by_id
-        ]
+        ][:6]
         if entry_ids:
             return [entity_by_id[entity_id] for entity_id in entry_ids]
         return draft.entities[:3]
@@ -163,18 +164,18 @@ def _entities_for_task(
             entity
             for entity in draft.entities
             if entity.type.lower() == "config" or entity.name.lower() in CONFIG_NAMES
-        ]
+        ][:8]
 
     if task_type == "trace_dependency_hubs":
-        degrees = _relation_degrees(draft.relations)
-        return sorted(
-            draft.entities,
-            key=lambda entity: (
-                -degrees.get(entity.id, 0),
-                entity.name.lower(),
-                entity.id,
-            ),
-        )[:8]
+        relation_counts: Counter[str] = Counter()
+        for relation in draft.relations:
+            relation_counts[relation.source_id] += 1
+            relation_counts[relation.target_id] += 1
+        return [
+            entity_by_id[entity_id]
+            for entity_id, _count in relation_counts.most_common(8)
+            if entity_id in entity_by_id
+        ]
 
     return draft.entities[:8]
 
@@ -220,14 +221,6 @@ def _risks_for_task(
             "relation_count": len(draft.relations),
         }
     ]
-
-
-def _relation_degrees(relations: list[ProjectRelation]) -> dict[str, int]:
-    degrees: dict[str, int] = {}
-    for relation in relations:
-        degrees[relation.source_id] = degrees.get(relation.source_id, 0) + 1
-        degrees[relation.target_id] = degrees.get(relation.target_id, 0) + 1
-    return degrees
 
 
 def _utc_now() -> str:
