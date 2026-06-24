@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import replace
 from pathlib import Path
 
@@ -29,6 +30,8 @@ from src.project_archive.types import (
     ProjectArchiveDraft,
     QueryMode,
 )
+
+MISSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 
 
 class ProjectArchiveService:
@@ -179,6 +182,7 @@ class ProjectArchiveService:
         return mission
 
     def load_mission(self, mission_id: str) -> AutonomousMission:
+        self._validate_mission_id(mission_id)
         for project_dir in self.storage_dir.iterdir():
             path = project_dir / "missions" / f"{mission_id}.json"
             if path.exists():
@@ -209,9 +213,14 @@ class ProjectArchiveService:
         return self._project_dir(project_id) / "agent_report.json"
 
     def _mission_path(self, project_id: str, mission_id: str) -> Path:
+        self._validate_mission_id(mission_id)
         path = self._project_dir(project_id) / "missions"
         path.mkdir(parents=True, exist_ok=True)
         return path / f"{mission_id}.json"
+
+    def _validate_mission_id(self, mission_id: str) -> None:
+        if not MISSION_ID_PATTERN.fullmatch(mission_id):
+            raise ValueError(f"Invalid mission id: {mission_id}")
 
     def _graph_path(self, project_id: str) -> Path:
         if self.graph_provider.lower() == "kuzu":

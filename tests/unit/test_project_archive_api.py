@@ -249,6 +249,82 @@ def test_pause_resume_stop_mission_update_status(tmp_path: Path) -> None:
     assert stop_response.json()["status"] == "stopped"
 
 
+def test_start_mission_rejects_unsupported_goal(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+
+    response = client.post(
+        "/api/archives/sample/missions",
+        json={"goal": "map_runtime_logs", "max_steps": 2},
+    )
+
+    assert response.status_code == 400
+    assert "Unsupported mission goal" in response.json()["detail"]
+
+
+def test_start_mission_validates_step_budget(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+
+    too_small = client.post(
+        "/api/archives/sample/missions",
+        json={"goal": "understand_project_architecture", "max_steps": 0},
+    )
+    too_large = client.post(
+        "/api/archives/sample/missions",
+        json={"goal": "understand_project_architecture", "max_steps": 13},
+    )
+
+    assert too_small.status_code == 422
+    assert too_large.status_code == 422
+
+
+def test_start_mission_returns_404_for_missing_archive(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+
+    response = client.post(
+        "/api/archives/missing/missions",
+        json={"goal": "understand_project_architecture", "max_steps": 2},
+    )
+
+    assert response.status_code == 404
+
+
+def test_unknown_mission_endpoints_return_404(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    mission_id = "missing-mission"
+
+    responses = [
+        client.get(f"/api/missions/{mission_id}"),
+        client.get(f"/api/missions/{mission_id}/tasks"),
+        client.get(f"/api/missions/{mission_id}/graph-overlay"),
+        client.post(f"/api/missions/{mission_id}/pause"),
+        client.post(f"/api/missions/{mission_id}/resume"),
+        client.post(f"/api/missions/{mission_id}/stop"),
+    ]
+
+    assert [response.status_code for response in responses] == [404] * len(responses)
+
+
+def test_mission_status_update_preserves_persisted_tasks_and_overlay(
+    tmp_path: Path,
+) -> None:
+    client = _client(tmp_path)
+    mission_id = client.post(
+        "/api/archives/sample/missions",
+        json={"goal": "understand_project_architecture", "max_steps": 2},
+    ).json()["id"]
+
+    pause_response = client.post(f"/api/missions/{mission_id}/pause")
+    reload_response = client.get(f"/api/missions/{mission_id}")
+
+    assert pause_response.status_code == 200
+    assert reload_response.status_code == 200
+    payload = reload_response.json()
+    assert payload["status"] == "paused"
+    assert len(payload["tasks"]) == 2
+    assert payload["graph_overlay"]["mission_id"] == mission_id
+    assert payload["graph_overlay"]["explored_node_ids"]
+
+
 def test_upload_archive_ingests_project_zip(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("TWINMIND_AGENT_LLM_ENABLED", "false")
     client = _client(tmp_path)
