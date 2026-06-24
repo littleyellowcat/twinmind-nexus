@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 from src.project_archive.agents import AgentWorkflow
 from src.project_archive.archive_builder import ArchiveBuilder
+from src.project_archive.autonomous_mission import (
+    ARCHITECTURE_GOAL,
+    run_architecture_mission,
+)
 from src.project_archive.graph_explorer import (
     build_graph_neighborhood,
     build_graph_summary,
@@ -17,6 +22,7 @@ from src.project_archive.multi_agent import MultiAgentPipeline
 from src.project_archive.scanner import SCAN_PROFILE_ARCHITECTURE
 from src.project_archive.types import (
     AgentResult,
+    AutonomousMission,
     GraphNeighborhood,
     GraphSummary,
     ProjectAgentReport,
@@ -156,6 +162,40 @@ class ProjectArchiveService:
             relation_limit=relation_limit,
         )
 
+    def start_architecture_mission(
+        self,
+        project_id: str,
+        *,
+        max_steps: int = 12,
+    ) -> AutonomousMission:
+        draft = self.load_draft(project_id)
+        mission = run_architecture_mission(draft, max_steps=max_steps)
+        if mission.goal != ARCHITECTURE_GOAL:
+            raise ValueError(f"Unsupported mission goal: {mission.goal}")
+        self._mission_path(project_id, mission.id).write_text(
+            json.dumps(mission.to_dict(), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        return mission
+
+    def load_mission(self, mission_id: str) -> AutonomousMission:
+        for project_dir in self.storage_dir.iterdir():
+            path = project_dir / "missions" / f"{mission_id}.json"
+            if path.exists():
+                return AutonomousMission.from_dict(
+                    json.loads(path.read_text(encoding="utf-8"))
+                )
+        raise ValueError(f"Mission not found: {mission_id}")
+
+    def update_mission_status(self, mission_id: str, status: str) -> AutonomousMission:
+        mission = self.load_mission(mission_id)
+        updated = replace(mission, status=status)
+        self._mission_path(updated.project_id, updated.id).write_text(
+            json.dumps(updated.to_dict(), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        return updated
+
     def _project_dir(self, project_id: str) -> Path:
         safe_project_id = project_id.replace("/", "_").replace(" ", "_")
         path = self.storage_dir / safe_project_id
@@ -167,6 +207,11 @@ class ProjectArchiveService:
 
     def _agent_report_path(self, project_id: str) -> Path:
         return self._project_dir(project_id) / "agent_report.json"
+
+    def _mission_path(self, project_id: str, mission_id: str) -> Path:
+        path = self._project_dir(project_id) / "missions"
+        path.mkdir(parents=True, exist_ok=True)
+        return path / f"{mission_id}.json"
 
     def _graph_path(self, project_id: str) -> Path:
         if self.graph_provider.lower() == "kuzu":

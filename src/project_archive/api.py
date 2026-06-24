@@ -25,6 +25,7 @@ from fastapi import (
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+from src.project_archive.autonomous_mission import ARCHITECTURE_GOAL
 from src.project_archive.scanner import (
     SCAN_PROFILE_ARCHITECTURE,
     ignore_prefixes_for_profile,
@@ -104,6 +105,11 @@ IGNORED_PARTS = {
 class ArchiveQueryRequest(BaseModel):
     question: str = Field(min_length=1)
     mode: QueryMode = QueryMode.EVIDENCE_QA
+
+
+class MissionStartRequest(BaseModel):
+    goal: str = ARCHITECTURE_GOAL
+    max_steps: int = Field(default=12, ge=1, le=12)
 
 
 @dataclass
@@ -281,6 +287,81 @@ def create_app() -> FastAPI:
                 node_limit=node_limit,
                 relation_limit=relation_limit,
             ).to_dict()
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/api/archives/{project_id}/missions", status_code=202)
+    def start_mission(
+        project_id: str,
+        request: MissionStartRequest,
+        service: ServiceDep,
+    ) -> dict:
+        if request.goal != ARCHITECTURE_GOAL:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported mission goal: {request.goal}",
+            )
+        try:
+            return service.start_architecture_mission(
+                project_id,
+                max_steps=request.max_steps,
+            ).to_dict()
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get("/api/missions/{mission_id}")
+    def get_mission(mission_id: str, service: ServiceDep) -> dict:
+        try:
+            return service.load_mission(mission_id).to_dict()
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get("/api/missions/{mission_id}/tasks")
+    def get_mission_tasks(mission_id: str, service: ServiceDep) -> dict:
+        try:
+            mission = service.load_mission(mission_id)
+            return {
+                "mission_id": mission.id,
+                "tasks": [task.to_dict() for task in mission.tasks],
+            }
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get("/api/missions/{mission_id}/graph-overlay")
+    def get_mission_graph_overlay(mission_id: str, service: ServiceDep) -> dict:
+        try:
+            mission = service.load_mission(mission_id)
+            if mission.graph_overlay is None:
+                return {
+                    "mission_id": mission.id,
+                    "explored_node_ids": [],
+                    "explored_relation_ids": [],
+                    "risk_node_ids": [],
+                    "risk_relation_ids": [],
+                    "annotations": [],
+                }
+            return mission.graph_overlay.to_dict()
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/api/missions/{mission_id}/pause")
+    def pause_mission(mission_id: str, service: ServiceDep) -> dict:
+        try:
+            return service.update_mission_status(mission_id, "paused").to_dict()
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/api/missions/{mission_id}/resume")
+    def resume_mission(mission_id: str, service: ServiceDep) -> dict:
+        try:
+            return service.update_mission_status(mission_id, "complete").to_dict()
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/api/missions/{mission_id}/stop")
+    def stop_mission(mission_id: str, service: ServiceDep) -> dict:
+        try:
+            return service.update_mission_status(mission_id, "stopped").to_dict()
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 

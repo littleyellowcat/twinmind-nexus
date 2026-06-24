@@ -189,6 +189,66 @@ def test_get_graph_neighborhood_returns_404_for_unknown_archive(
     assert response.status_code == 404
 
 
+def test_start_architecture_mission_returns_completed_bounded_mission(
+    tmp_path: Path,
+) -> None:
+    client = _client(tmp_path)
+
+    response = client.post(
+        "/api/archives/sample/missions",
+        json={"goal": "understand_project_architecture", "max_steps": 3},
+    )
+
+    assert response.status_code == 202
+    payload = response.json()
+    assert payload["project_id"] == "sample"
+    assert payload["goal"] == "understand_project_architecture"
+    assert len(payload["tasks"]) == 3
+    assert payload["graph_overlay"]["explored_node_ids"]
+
+    mission_id = payload["id"]
+    mission_response = client.get(f"/api/missions/{mission_id}")
+    assert mission_response.status_code == 200
+    assert mission_response.json()["id"] == mission_id
+
+
+def test_get_mission_tasks_and_overlay(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+
+    created = client.post(
+        "/api/archives/sample/missions",
+        json={"goal": "understand_project_architecture", "max_steps": 2},
+    ).json()
+    mission_id = created["id"]
+
+    tasks_response = client.get(f"/api/missions/{mission_id}/tasks")
+    overlay_response = client.get(f"/api/missions/{mission_id}/graph-overlay")
+
+    assert tasks_response.status_code == 200
+    assert len(tasks_response.json()["tasks"]) == 2
+    assert overlay_response.status_code == 200
+    assert overlay_response.json()["mission_id"] == mission_id
+
+
+def test_pause_resume_stop_mission_update_status(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    mission_id = client.post(
+        "/api/archives/sample/missions",
+        json={"goal": "understand_project_architecture", "max_steps": 2},
+    ).json()["id"]
+
+    pause_response = client.post(f"/api/missions/{mission_id}/pause")
+    resume_response = client.post(f"/api/missions/{mission_id}/resume")
+    stop_response = client.post(f"/api/missions/{mission_id}/stop")
+
+    assert pause_response.status_code == 200
+    assert pause_response.json()["status"] == "paused"
+    assert resume_response.status_code == 200
+    assert resume_response.json()["status"] == "complete"
+    assert stop_response.status_code == 200
+    assert stop_response.json()["status"] == "stopped"
+
+
 def test_upload_archive_ingests_project_zip(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("TWINMIND_AGENT_LLM_ENABLED", "false")
     client = _client(tmp_path)
