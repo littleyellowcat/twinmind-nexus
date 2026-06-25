@@ -1255,7 +1255,8 @@ button {
   position: relative;
   display: grid;
   grid-template-columns: 300px minmax(420px, 1fr) 330px;
-  min-height: clamp(420px, calc(100vh - 250px), 760px);
+  height: clamp(420px, calc(100vh - 250px), 760px);
+  min-height: 0;
   overflow: hidden;
 }
 
@@ -1464,7 +1465,9 @@ button {
 }
 
 .graph-explorer-canvas {
-  min-height: clamp(390px, calc(100vh - 280px), 730px);
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
   display: grid;
   place-items: center;
   gap: 10px;
@@ -1498,7 +1501,7 @@ button {
 .graph-explorer-canvas svg {
   width: 100%;
   height: 100%;
-  min-height: clamp(390px, calc(100vh - 280px), 730px);
+  min-height: 0;
   display: block;
 }
 
