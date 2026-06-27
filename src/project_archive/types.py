@@ -453,3 +453,211 @@ class AutonomousMission:
             if data.get("graph_overlay")
             else None,
         )
+
+
+@dataclass(frozen=True)
+class AgentMissionBudget:
+    max_tasks: int = 5
+    max_steps_per_task: int = 4
+    max_tool_calls: int = 16
+    timeout_seconds: int = 90
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> AgentMissionBudget:
+        return cls(
+            max_tasks=int(data.get("max_tasks", 5)),
+            max_steps_per_task=int(data.get("max_steps_per_task", 4)),
+            max_tool_calls=int(data.get("max_tool_calls", 16)),
+            timeout_seconds=int(data.get("timeout_seconds", 90)),
+        )
+
+
+@dataclass(frozen=True)
+class AgentMissionTask:
+    id: str
+    mission_id: str
+    task_type: str
+    objective: str
+    status: str
+    allowed_tools: list[str] = field(default_factory=list)
+    max_steps: int = 4
+    steps_used: int = 0
+    input_entity_ids: list[str] = field(default_factory=list)
+    output_entity_ids: list[str] = field(default_factory=list)
+    evidence_ids: list[str] = field(default_factory=list)
+    findings: list[dict[str, Any]] = field(default_factory=list)
+    risks: list[dict[str, Any]] = field(default_factory=list)
+    confidence: float = 0.0
+    created_at: str = ""
+    completed_at: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> AgentMissionTask:
+        return cls(
+            id=data["id"],
+            mission_id=data["mission_id"],
+            task_type=data["task_type"],
+            objective=data["objective"],
+            status=data.get("status", "pending"),
+            allowed_tools=list(data.get("allowed_tools", [])),
+            max_steps=int(data.get("max_steps", 4)),
+            steps_used=int(data.get("steps_used", 0)),
+            input_entity_ids=list(data.get("input_entity_ids", [])),
+            output_entity_ids=list(data.get("output_entity_ids", [])),
+            evidence_ids=list(data.get("evidence_ids", [])),
+            findings=list(data.get("findings", [])),
+            risks=list(data.get("risks", [])),
+            confidence=float(data.get("confidence", 0.0)),
+            created_at=data.get("created_at", ""),
+            completed_at=data.get("completed_at", ""),
+        )
+
+
+@dataclass(frozen=True)
+class AgentTraceEvent:
+    id: str
+    mission_id: str
+    task_id: str
+    sequence: int
+    event_type: str
+    tool_name: str | None = None
+    tool_input: dict[str, Any] = field(default_factory=dict)
+    observation_summary: str = ""
+    evidence_ids: list[str] = field(default_factory=list)
+    entity_ids: list[str] = field(default_factory=list)
+    relation_ids: list[str] = field(default_factory=list)
+    started_at: str = ""
+    completed_at: str = ""
+    error: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> AgentTraceEvent:
+        return cls(
+            id=data["id"],
+            mission_id=data["mission_id"],
+            task_id=data["task_id"],
+            sequence=int(data["sequence"]),
+            event_type=data["event_type"],
+            tool_name=data.get("tool_name"),
+            tool_input=dict(data.get("tool_input", {})),
+            observation_summary=data.get("observation_summary", ""),
+            evidence_ids=list(data.get("evidence_ids", [])),
+            entity_ids=list(data.get("entity_ids", [])),
+            relation_ids=list(data.get("relation_ids", [])),
+            started_at=data.get("started_at", ""),
+            completed_at=data.get("completed_at", ""),
+            error=data.get("error"),
+            metadata=dict(data.get("metadata", {})),
+        )
+
+
+@dataclass(frozen=True)
+class AgentMissionVerifierResult:
+    status: str
+    supported_finding_count: int = 0
+    uncertain_finding_count: int = 0
+    warnings: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> AgentMissionVerifierResult:
+        return cls(
+            status=data.get("status", "uncertain"),
+            supported_finding_count=int(data.get("supported_finding_count", 0)),
+            uncertain_finding_count=int(data.get("uncertain_finding_count", 0)),
+            warnings=list(data.get("warnings", [])),
+        )
+
+
+@dataclass(frozen=True)
+class AgentMissionFinalReport:
+    summary: str
+    findings: list[dict[str, Any]] = field(default_factory=list)
+    evidence_ids: list[str] = field(default_factory=list)
+    confidence: float = 0.0
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> AgentMissionFinalReport:
+        return cls(
+            summary=data.get("summary", ""),
+            findings=list(data.get("findings", [])),
+            evidence_ids=list(data.get("evidence_ids", [])),
+            confidence=float(data.get("confidence", 0.0)),
+        )
+
+
+@dataclass(frozen=True)
+class AgentMission:
+    id: str
+    project_id: str
+    goal: str
+    status: str
+    created_at: str
+    completed_at: str = ""
+    budget: AgentMissionBudget = field(default_factory=AgentMissionBudget)
+    tasks: list[AgentMissionTask] = field(default_factory=list)
+    trace_events: list[AgentTraceEvent] = field(default_factory=list)
+    verifier_result: AgentMissionVerifierResult | None = None
+    final_report: AgentMissionFinalReport | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "project_id": self.project_id,
+            "goal": self.goal,
+            "status": self.status,
+            "created_at": self.created_at,
+            "completed_at": self.completed_at,
+            "budget": self.budget.to_dict(),
+            "tasks": [task.to_dict() for task in self.tasks],
+            "trace_events": [event.to_dict() for event in self.trace_events],
+            "verifier_result": self.verifier_result.to_dict()
+            if self.verifier_result
+            else None,
+            "final_report": self.final_report.to_dict() if self.final_report else None,
+            "metadata": dict(self.metadata),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> AgentMission:
+        return cls(
+            id=data["id"],
+            project_id=data["project_id"],
+            goal=data["goal"],
+            status=data.get("status", "pending"),
+            created_at=data.get("created_at", ""),
+            completed_at=data.get("completed_at", ""),
+            budget=AgentMissionBudget.from_dict(data.get("budget", {})),
+            tasks=[
+                AgentMissionTask.from_dict(task) for task in data.get("tasks", [])
+            ],
+            trace_events=[
+                AgentTraceEvent.from_dict(event)
+                for event in data.get("trace_events", [])
+            ],
+            verifier_result=AgentMissionVerifierResult.from_dict(
+                data["verifier_result"]
+            )
+            if data.get("verifier_result")
+            else None,
+            final_report=AgentMissionFinalReport.from_dict(data["final_report"])
+            if data.get("final_report")
+            else None,
+            metadata=dict(data.get("metadata", {})),
+        )
