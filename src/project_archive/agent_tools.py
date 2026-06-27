@@ -469,6 +469,7 @@ def _prior_agents(value: Any) -> dict[str, AgentRoleResult] | None:
         if isinstance(result, AgentRoleResult):
             agents[str(name)] = result
         elif isinstance(result, dict):
+            _validate_prior_agent_payload(str(name), result)
             try:
                 agents[str(name)] = AgentRoleResult.from_dict(result)
             except (TypeError, ValueError) as exc:
@@ -478,3 +479,41 @@ def _prior_agents(value: Any) -> dict[str, AgentRoleResult] | None:
         else:
             raise ToolExecutionError("prior_agents values must be AgentRoleResult payloads.")
     return agents
+
+
+def _validate_prior_agent_payload(name: str, payload: dict[str, Any]) -> None:
+    string_fields = ("agent", "status", "summary")
+    list_fields = (
+        "findings",
+        "risks",
+        "next_actions",
+        "evidence_card_ids",
+        "entity_ids",
+        "relation_ids",
+    )
+    for field in string_fields:
+        if not isinstance(payload.get(field), str):
+            raise ToolExecutionError(
+                f"prior_agents contains invalid AgentRoleResult payload for {name}: "
+                f"{field} must be a string"
+            )
+    for field in list_fields:
+        if field in payload and not isinstance(payload[field], list):
+            raise ToolExecutionError(
+                f"prior_agents contains invalid AgentRoleResult payload for {name}: "
+                f"{field} must be a list"
+            )
+    if "metadata" in payload and not isinstance(payload["metadata"], dict):
+        raise ToolExecutionError(
+            f"prior_agents contains invalid AgentRoleResult payload for {name}: "
+            "metadata must be a dictionary"
+        )
+    confidence = payload.get("confidence")
+    if (
+        confidence is not None
+        and (isinstance(confidence, bool) or not isinstance(confidence, (int, float)))
+    ):
+        raise ToolExecutionError(
+            f"prior_agents contains invalid AgentRoleResult payload for {name}: "
+            "confidence must be numeric"
+        )

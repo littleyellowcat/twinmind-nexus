@@ -313,13 +313,33 @@ def test_unknown_specialist_role_is_rejected_by_registry():
 def test_malformed_prior_agents_is_rejected_with_tool_error():
     registry = AgentToolRegistry(FakeService())
 
-    with pytest.raises(ToolExecutionError, match="malformed AgentRoleResult"):
+    with pytest.raises(ToolExecutionError, match="status must be a string"):
         registry.execute(
             "run_specialist_agent",
             {
                 "project_id": "demo",
                 "role": "archivist",
                 "prior_agents": {"archivist": {"agent": "archivist"}},
+            },
+        )
+
+
+def test_prior_agent_payload_with_invalid_field_types_is_rejected():
+    registry = AgentToolRegistry(FakeService())
+
+    with pytest.raises(ToolExecutionError, match="summary must be a string"):
+        registry.execute(
+            "run_specialist_agent",
+            {
+                "project_id": "demo",
+                "role": "archivist",
+                "prior_agents": {
+                    "archivist": {
+                        "agent": "archivist",
+                        "status": "complete",
+                        "summary": 123,
+                    }
+                },
             },
         )
 
