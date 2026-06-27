@@ -11,7 +11,7 @@ from time import monotonic
 from typing import Any
 from uuid import uuid4
 
-from src.libs.llm import BaseLLM
+from src.libs.llm import BaseLLM, Message
 from src.project_archive.agent_tools import AgentToolRegistry
 from src.project_archive.types import (
     AgentMission,
@@ -118,6 +118,95 @@ def plan_agent_mission(
             }
         },
     )
+
+
+def _parse_action_response(content: str) -> tuple[str, str, dict[str, object], bool]:
+    payload = json.loads(content)
+    if not isinstance(payload, dict):
+        raise ValueError("LLM action response must be a JSON object.")
+
+    thought_summary = payload.get("thought_summary", "")
+    if thought_summary is None:
+        thought_summary = ""
+    if not isinstance(thought_summary, str):
+        raise ValueError("LLM thought_summary must be a string.")
+
+    action = payload.get("action")
+    if not isinstance(action, dict):
+        raise ValueError("LLM action must be a JSON object.")
+
+    tool = action.get("tool")
+    if not isinstance(tool, str) or not tool.strip():
+        raise ValueError("LLM action.tool must be a non-empty string.")
+
+    tool_input = action.get("input", {})
+    if not isinstance(tool_input, dict):
+        raise ValueError("LLM action.input must be a JSON object.")
+
+    stop = payload.get("stop", False)
+    if not isinstance(stop, bool):
+        raise ValueError("LLM stop must be a boolean.")
+
+    return thought_summary.strip(), tool.strip(), dict(tool_input), stop
+
+
+def _action_messages(
+    mission: AgentMission,
+    task: AgentMissionTask,
+    allowed_tools: list[str],
+    trace_events: list[AgentTraceEvent],
+) -> list[Message]:
+    recent_observations = [
+        {
+            "event_type": event.event_type,
+            "tool_name": event.tool_name,
+            "observation_summary": event.observation_summary,
+            "evidence_ids": list(event.evidence_ids),
+            "entity_ids": list(event.entity_ids),
+            "relation_ids": list(event.relation_ids),
+        }
+        for event in trace_events[-5:]
+    ]
+    request = {
+        "mission": {
+            "id": mission.id,
+            "project_id": mission.project_id,
+            "goal": mission.goal,
+        },
+        "task": {
+            "id": task.id,
+            "task_type": task.task_type,
+            "objective": task.objective,
+            "allowed_tools": list(allowed_tools),
+            "input_entity_ids": list(task.input_entity_ids),
+            "steps_used": task.steps_used,
+            "max_steps": task.max_steps,
+        },
+        "recent_observations": recent_observations,
+        "response_schema": {
+            "thought_summary": "brief rationale summary only; no hidden reasoning",
+            "action": {
+                "tool": "one allowed tool name",
+                "input": {"project_id": mission.project_id},
+            },
+            "stop": False,
+        },
+    }
+    return [
+        Message(
+            role="system",
+            content=(
+                "Select the next graph-grounded tool call for the mission. "
+                "Return JSON only, with no Markdown fences. Do not include "
+                "hidden reasoning or chain-of-thought; at most include a short "
+                "thought_summary."
+            ),
+        ),
+        Message(
+            role="user",
+            content=json.dumps(request, ensure_ascii=False),
+        ),
+    ]
 
 
 class MissionStore:
@@ -341,7 +430,7 @@ class AgentMissionRuntime:
             task_trace_count = 0
             timed_out = False
 
-            for tool_name, tool_input in calls:
+            for default_tool_name, default_tool_input in calls:
                 if tool_calls_used >= running.budget.max_tool_calls:
                     break
                 if monotonic() - started_monotonic >= timeout_seconds:
@@ -354,17 +443,26 @@ class AgentMissionRuntime:
                             task_id=task.id,
                             sequence=sequence,
                             event_type="error",
-                            tool_name=tool_name,
-                            tool_input=dict(tool_input),
+                            tool_name=default_tool_name,
+                            tool_input=dict(default_tool_input),
                             observation_summary="Mission timeout expired before tool execution.",
                             started_at=now,
                             completed_at=now,
                             error="Mission timeout expired.",
+                            metadata={"selection": "deterministic"},
                         )
                     )
                     sequence += 1
                     task_trace_count += 1
                     break
+
+                tool_name, tool_input, selection_metadata = self._select_tool_call(
+                    mission=running,
+                    task=task,
+                    default_tool_name=default_tool_name,
+                    default_tool_input=default_tool_input,
+                    trace_events=trace_events,
+                )
                 if tool_name not in task.allowed_tools:
                     now = utc_now()
                     trace_events.append(
@@ -379,6 +477,7 @@ class AgentMissionRuntime:
                             observation_summary="Tool is not allowed for this task.",
                             started_at=now,
                             completed_at=now,
+                            metadata=selection_metadata,
                         )
                     )
                     sequence += 1
@@ -403,6 +502,7 @@ class AgentMissionRuntime:
                             relation_ids=list(result.relation_ids),
                             started_at=event_started_at,
                             completed_at=utc_now(),
+                            metadata=selection_metadata,
                         )
                     )
                     findings.append(
@@ -432,6 +532,7 @@ class AgentMissionRuntime:
                             started_at=event_started_at,
                             completed_at=utc_now(),
                             error=str(exc),
+                            metadata=selection_metadata,
                         )
                     )
                 sequence += 1
@@ -574,6 +675,76 @@ class AgentMissionRuntime:
             task.task_type,
             [("graph_summary", {"project_id": project_id})],
         )
+
+    def _select_tool_call(
+        self,
+        mission: AgentMission,
+        task: AgentMissionTask,
+        default_tool_name: str,
+        default_tool_input: dict[str, Any],
+        trace_events: list[AgentTraceEvent],
+    ) -> tuple[str, dict[str, Any], dict[str, Any]]:
+        fallback_input = dict(default_tool_input)
+        fallback_input.setdefault("project_id", mission.project_id)
+        deterministic_metadata: dict[str, Any] = {"selection": "deterministic"}
+        if self.llm is None:
+            return default_tool_name, fallback_input, deterministic_metadata
+
+        try:
+            response = self.llm.chat(
+                _action_messages(
+                    mission=mission,
+                    task=task,
+                    allowed_tools=task.allowed_tools,
+                    trace_events=trace_events,
+                )
+            )
+            thought_summary, tool_name, tool_input, stop_requested = (
+                _parse_action_response(response.content)
+            )
+            metadata: dict[str, Any] = {
+                "selection": "llm",
+                "model": response.model,
+            }
+            if thought_summary:
+                metadata["thought_summary"] = thought_summary
+
+            if stop_requested:
+                return (
+                    default_tool_name,
+                    fallback_input,
+                    {
+                        **metadata,
+                        "selection": "deterministic",
+                        "llm_stop_requested": True,
+                        "llm_fallback": True,
+                    },
+                )
+            if tool_name not in task.allowed_tools:
+                return (
+                    default_tool_name,
+                    fallback_input,
+                    {
+                        **metadata,
+                        "selection": "deterministic",
+                        "llm_fallback": True,
+                        "error": f"LLM selected disallowed tool: {tool_name}",
+                    },
+                )
+
+            selected_input = dict(tool_input)
+            selected_input.setdefault("project_id", mission.project_id)
+            return tool_name, selected_input, metadata
+        except Exception as exc:
+            return (
+                default_tool_name,
+                fallback_input,
+                {
+                    **deterministic_metadata,
+                    "llm_fallback": True,
+                    "error": str(exc),
+                },
+            )
 
     def _verify_mission(
         self,

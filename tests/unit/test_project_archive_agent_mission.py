@@ -2,6 +2,7 @@ from dataclasses import replace
 
 import pytest
 
+from src.libs.llm import ChatResponse, Message
 from src.project_archive.types import (
     AgentMission,
     AgentMissionBudget,
@@ -186,6 +187,22 @@ class RuntimeFakeService:
                 }
             },
         )()
+
+
+class FakeActionLLM:
+    model = "fake-action-model"
+
+    def __init__(self, content: str):
+        self.content = content
+        self.messages: list[list[Message]] = []
+
+    def chat(self, messages, trace=None, **kwargs):
+        self.messages.append(messages)
+        return ChatResponse(
+            content=self.content,
+            model=self.model,
+            usage={"total_tokens": 12},
+        )
 
 
 def test_plan_agent_mission_creates_bounded_tasks():
@@ -416,3 +433,77 @@ def test_verifier_copies_findings_and_final_report_keeps_only_valid_evidence(tmp
     assert final_report.evidence_ids == ["ev_main"]
     assert final_report.findings[0]["evidence_ids"] == ["ev_main"]
     assert "missing_ev" not in final_report.findings[0]["evidence_ids"]
+
+
+def test_runtime_uses_llm_next_action_when_json_is_valid(tmp_path):
+    service = RuntimeFakeService(tmp_path)
+    llm = FakeActionLLM(
+        '{"thought_summary":"Inspect graph first",'
+        '"action":{"tool":"graph_summary","input":{"project_id":"demo"}},'
+        '"stop":false}'
+    )
+    runtime = AgentMissionRuntime(
+        service=service,
+        store=MissionStore(tmp_path),
+        tool_registry=AgentToolRegistry(service),
+        llm=llm,
+    )
+
+    mission = runtime.start(
+        project_id="demo",
+        goal="Understand architecture",
+        max_tasks=1,
+        max_steps_per_task=1,
+    )
+
+    assert llm.messages
+    assert mission.trace_events[0].tool_name == "graph_summary"
+    assert mission.trace_events[0].metadata["thought_summary"] == "Inspect graph first"
+    assert mission.trace_events[0].metadata["model"] == "fake-action-model"
+
+
+def test_runtime_falls_back_when_llm_action_is_invalid(tmp_path):
+    service = RuntimeFakeService(tmp_path)
+    llm = FakeActionLLM("this is not json")
+    runtime = AgentMissionRuntime(
+        service=service,
+        store=MissionStore(tmp_path),
+        tool_registry=AgentToolRegistry(service),
+        llm=llm,
+    )
+
+    mission = runtime.start(
+        project_id="demo",
+        goal="Understand architecture",
+        max_tasks=1,
+        max_steps_per_task=1,
+    )
+
+    assert mission.trace_events[0].tool_name == "graph_summary"
+    assert mission.trace_events[0].metadata["llm_fallback"] is True
+
+
+def test_runtime_falls_back_when_llm_selects_disallowed_tool(tmp_path):
+    service = RuntimeFakeService(tmp_path)
+    llm = FakeActionLLM(
+        '{"thought_summary":"Try evidence first",'
+        '"action":{"tool":"get_evidence","input":{"project_id":"demo"}},'
+        '"stop":false}'
+    )
+    runtime = AgentMissionRuntime(
+        service=service,
+        store=MissionStore(tmp_path),
+        tool_registry=AgentToolRegistry(service),
+        llm=llm,
+    )
+
+    mission = runtime.start(
+        project_id="demo",
+        goal="Understand architecture",
+        max_tasks=1,
+        max_steps_per_task=1,
+    )
+
+    assert mission.trace_events[0].tool_name == "graph_summary"
+    assert mission.trace_events[0].metadata["llm_fallback"] is True
+    assert "disallowed tool" in mission.trace_events[0].metadata["error"]
