@@ -32,7 +32,10 @@ from src.project_archive.scanner import (
     include_prefixes_for_profile,
     normalize_scan_profile,
 )
-from src.project_archive.service import ProjectArchiveService
+from src.project_archive.service import (
+    ProjectArchiveService,
+    TERMINAL_AGENT_MISSION_STATUSES,
+)
 from src.project_archive.types import QueryMode
 
 DEFAULT_ARCHIVE_STORAGE_DIR = Path("data/project_archive")
@@ -409,7 +412,7 @@ def create_app() -> FastAPI:
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
-        background_tasks.add_task(service.run_agent_mission, mission.id)
+        background_tasks.add_task(_run_agent_mission_background, service, mission.id)
         return mission.to_dict()
 
     @app.get("/api/agent-missions/{mission_id}")
@@ -433,20 +436,31 @@ def create_app() -> FastAPI:
     @app.post("/api/agent-missions/{mission_id}/pause")
     def pause_agent_mission(mission_id: str, service: ServiceDep) -> dict:
         try:
-            return service.update_agent_mission_status(mission_id, "paused").to_dict()
+            service.load_agent_mission(mission_id)
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=409,
+            detail="Agent mission pause is not supported yet.",
+        )
 
     @app.post("/api/agent-missions/{mission_id}/resume")
     def resume_agent_mission(mission_id: str, service: ServiceDep) -> dict:
         try:
-            return service.update_agent_mission_status(mission_id, "complete").to_dict()
+            service.load_agent_mission(mission_id)
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=409,
+            detail="Agent mission resume is not supported yet.",
+        )
 
     @app.post("/api/agent-missions/{mission_id}/stop")
     def stop_agent_mission(mission_id: str, service: ServiceDep) -> dict:
         try:
+            mission = service.load_agent_mission(mission_id)
+            if mission.status in TERMINAL_AGENT_MISSION_STATUSES:
+                return mission.to_dict()
             return service.update_agent_mission_status(mission_id, "stopped").to_dict()
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -655,6 +669,19 @@ def _run_agent_report_job(
             message="Agent analysis failed.",
             error=str(exc),
         )
+
+
+def _run_agent_mission_background(
+    service: ProjectArchiveService,
+    mission_id: str,
+) -> None:
+    try:
+        service.run_agent_mission(mission_id)
+    except Exception:  # noqa: BLE001
+        try:
+            service.update_agent_mission_status(mission_id, "failed")
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def _slugify_project_id(value: str) -> str:

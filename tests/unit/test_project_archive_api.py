@@ -366,11 +366,103 @@ def test_agent_mission_endpoints_return_mission_and_trace(
     stopped = client.post(f"/api/agent-missions/{mission['id']}/stop")
 
     assert loaded.status_code == 200
-    assert loaded.json()["status"] in {"planned", "running", "complete"}
+    loaded_payload = loaded.json()
+    assert loaded_payload["status"] == "complete"
+    assert loaded_payload["trace_events"]
     assert trace.status_code == 200
-    assert "trace_events" in trace.json()
+    assert trace.json()["trace_events"]
     assert stopped.status_code == 200
-    assert stopped.json()["status"] == "stopped"
+    assert stopped.json()["status"] == "complete"
+
+
+def test_agent_mission_endpoints_return_404_for_unknown_mission(
+    tmp_path: Path,
+) -> None:
+    client = _client(tmp_path)
+    mission_id = "missing-mission"
+
+    responses = [
+        client.get(f"/api/agent-missions/{mission_id}"),
+        client.get(f"/api/agent-missions/{mission_id}/trace"),
+        client.post(f"/api/agent-missions/{mission_id}/stop"),
+    ]
+
+    assert [response.status_code for response in responses] == [404] * len(responses)
+
+
+def test_agent_mission_create_returns_404_for_missing_archive(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("TWINMIND_AGENT_LLM_ENABLED", "false")
+    client = _client(tmp_path)
+
+    response = client.post(
+        "/api/archives/missing/agent-missions",
+        json={
+            "goal": "Understand project architecture",
+            "max_tasks": 2,
+            "max_steps_per_task": 2,
+        },
+    )
+
+    assert response.status_code == 404
+
+
+def test_agent_mission_create_validates_task_budgets(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("TWINMIND_AGENT_LLM_ENABLED", "false")
+    client = _client(tmp_path)
+
+    invalid_max_tasks = client.post(
+        "/api/archives/sample/agent-missions",
+        json={
+            "goal": "Understand project architecture",
+            "max_tasks": 0,
+            "max_steps_per_task": 2,
+        },
+    )
+    invalid_steps = client.post(
+        "/api/archives/sample/agent-missions",
+        json={
+            "goal": "Understand project architecture",
+            "max_tasks": 2,
+            "max_steps_per_task": 9,
+        },
+    )
+
+    assert invalid_max_tasks.status_code == 422
+    assert invalid_steps.status_code == 422
+
+
+def test_agent_mission_pause_resume_are_unsupported_and_do_not_mutate(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("TWINMIND_AGENT_LLM_ENABLED", "false")
+    client = _client(tmp_path)
+    mission = client.post(
+        "/api/archives/sample/agent-missions",
+        json={
+            "goal": "Understand project architecture",
+            "max_tasks": 2,
+            "max_steps_per_task": 2,
+        },
+    ).json()
+    mission_id = mission["id"]
+    status_before = client.get(f"/api/agent-missions/{mission_id}").json()["status"]
+
+    pause = client.post(f"/api/agent-missions/{mission_id}/pause")
+    resume = client.post(f"/api/agent-missions/{mission_id}/resume")
+    status_after = client.get(f"/api/agent-missions/{mission_id}").json()["status"]
+
+    assert pause.status_code == 409
+    assert pause.json()["detail"] == "Agent mission pause is not supported yet."
+    assert resume.status_code == 409
+    assert resume.json()["detail"] == "Agent mission resume is not supported yet."
+    assert status_after == status_before
 
 
 def test_upload_archive_ingests_project_zip(tmp_path: Path, monkeypatch) -> None:
