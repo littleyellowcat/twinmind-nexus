@@ -26,6 +26,8 @@ from src.project_archive.types import (
 DEFAULT_AGENT_GOAL = "Understand project architecture"
 MISSION_ID_GLOB_CHARS = {"*", "?", "[", "]", "{", "}"}
 MAX_THOUGHT_SUMMARY_CHARS = 240
+TERMINAL_MISSION_STATUSES = {"complete", "failed", "stopped", "cancelled"}
+INTERRUPTED_MISSION_STATUSES = {"stopped", "cancelled"}
 
 
 @dataclass(frozen=True)
@@ -529,7 +531,7 @@ class AgentMissionRuntime:
         mission: AgentMission,
         draft: ProjectArchiveDraft,
     ) -> AgentMission:
-        if mission.status == "complete":
+        if mission.status in TERMINAL_MISSION_STATUSES:
             return mission
 
         running = replace(mission, status="running")
@@ -708,6 +710,9 @@ class AgentMissionRuntime:
         )
         verified = self._verify_mission(completed, draft)
         final = replace(verified, final_report=self._final_report(verified))
+        stored = self.store.load(running.id)
+        if stored.status in INTERRUPTED_MISSION_STATUSES:
+            return stored
         return self.store.save(final)
 
     def _default_tool_calls(

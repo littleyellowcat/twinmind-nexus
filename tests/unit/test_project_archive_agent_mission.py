@@ -86,7 +86,7 @@ from src.project_archive.agent_mission import (
     MissionStore,
     plan_agent_mission,
 )
-from src.project_archive.agent_tools import AgentToolRegistry
+from src.project_archive.agent_tools import AgentToolRegistry, AgentToolResult
 from src.project_archive.service import ProjectArchiveService
 from src.project_archive.types import (
     ArchiveHall,
@@ -217,6 +217,16 @@ class RaisingActionLLM:
     def chat(self, messages, trace=None, **kwargs):
         self.messages.append(messages)
         raise RuntimeError(self.message)
+
+
+def write_fake_draft(tmp_path: Path) -> None:
+    archive_dir = tmp_path / "demo"
+    archive_dir.mkdir()
+    draft = RuntimeFakeService(tmp_path).draft
+    (archive_dir / "draft_archive.json").write_text(
+        json.dumps(draft.to_dict()),
+        encoding="utf-8",
+    )
 
 
 def test_plan_agent_mission_creates_bounded_tasks():
@@ -667,15 +677,26 @@ def test_runtime_falls_back_when_llm_raises_without_leaking_message(tmp_path):
     assert "secret-token-123" not in str(metadata)
 
 
-def test_service_starts_loads_traces_and_updates_agent_mission(tmp_path):
-    service = ProjectArchiveService(storage_dir=tmp_path)
-    archive_dir = tmp_path / "demo"
-    archive_dir.mkdir()
-    draft = RuntimeFakeService(tmp_path).draft
-    (archive_dir / "draft_archive.json").write_text(
-        json.dumps(draft.to_dict()),
-        encoding="utf-8",
+def test_service_agent_mission_runtime_uses_configured_llm(tmp_path, monkeypatch):
+    fake_llm = object()
+    fake_enhancer = type("FakeEnhancer", (), {"llm": fake_llm})()
+    monkeypatch.setattr(
+        "src.project_archive.service.create_archive_llm_enhancer_from_config",
+        lambda: fake_enhancer,
     )
+
+    service = ProjectArchiveService(storage_dir=tmp_path)
+
+    assert service._agent_mission_runtime().llm is fake_llm
+
+
+def test_service_starts_loads_traces_and_updates_agent_mission(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "src.project_archive.service.create_archive_llm_enhancer_from_config",
+        lambda: None,
+    )
+    service = ProjectArchiveService(storage_dir=tmp_path)
+    write_fake_draft(tmp_path)
 
     planned = service.create_agent_mission(
         "demo",
@@ -698,3 +719,68 @@ def test_service_starts_loads_traces_and_updates_agent_mission(tmp_path):
     assert persisted["id"] == mission.id
     assert persisted["status"] == "stopped"
     assert mission_path.exists()
+
+
+def test_service_run_agent_mission_does_not_rerun_stopped_mission(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "src.project_archive.service.create_archive_llm_enhancer_from_config",
+        lambda: None,
+    )
+    service = ProjectArchiveService(storage_dir=tmp_path)
+    write_fake_draft(tmp_path)
+    planned = service.create_agent_mission(
+        "demo",
+        "Understand architecture",
+        max_tasks=1,
+        max_steps_per_task=1,
+    )
+    stopped = service.update_agent_mission_status(planned.id, "stopped")
+
+    rerun = service.run_agent_mission(planned.id)
+
+    assert rerun.status == "stopped"
+    assert rerun.trace_events == stopped.trace_events == []
+
+
+def test_runtime_final_save_does_not_overwrite_stopped_mission(tmp_path):
+    class StoppingToolRegistry:
+        def __init__(self, store):
+            self.store = store
+            self.mission_id = ""
+
+        def execute(self, tool_name, tool_input):
+            self.store.update_status(self.mission_id, "stopped")
+            return AgentToolResult(
+                tool_name=tool_name,
+                summary="Stopped during execution.",
+                payload={},
+                evidence_ids=["ev_main"],
+                entity_ids=["file_main"],
+                relation_ids=[],
+            )
+
+    service = RuntimeFakeService(tmp_path)
+    store = MissionStore(tmp_path)
+    tool_registry = StoppingToolRegistry(store)
+    runtime = AgentMissionRuntime(
+        service=service,
+        store=store,
+        tool_registry=tool_registry,
+        llm=None,
+    )
+    mission = plan_agent_mission(
+        draft=service.draft,
+        goal="Understand architecture",
+        max_tasks=1,
+        max_steps_per_task=1,
+    )
+    store.save(mission)
+    tool_registry.mission_id = mission.id
+
+    result = runtime.run(mission.id)
+    stored = store.load(mission.id)
+
+    assert result.status == "stopped"
+    assert stored.status == "stopped"
+    assert result.trace_events == []
+    assert stored.trace_events == []

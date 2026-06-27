@@ -41,7 +41,8 @@ from src.project_archive.types import (
     QueryMode,
 )
 
-MISSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_:-]{0,127}$")
+MISSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
+TERMINAL_AGENT_MISSION_STATUSES = {"complete", "failed", "stopped", "cancelled"}
 
 
 class ProjectArchiveService:
@@ -328,11 +329,15 @@ class ProjectArchiveService:
             max_tasks=max_tasks,
             max_steps_per_task=max_steps_per_task,
         )
-        return runtime.store.save(mission)
+        return mission
 
     def run_agent_mission(self, mission_id: str) -> AgentMission:
         self._validate_mission_id(mission_id)
-        return self._agent_mission_runtime().run(mission_id)
+        runtime = self._agent_mission_runtime()
+        mission = runtime.load(mission_id)
+        if mission.status in TERMINAL_AGENT_MISSION_STATUSES:
+            return mission
+        return runtime.run(mission_id)
 
     def start_agent_mission(
         self,
@@ -363,10 +368,12 @@ class ProjectArchiveService:
         return self._agent_mission_runtime().update_status(mission_id, status)
 
     def _agent_mission_runtime(self) -> AgentMissionRuntime:
+        enhancer = create_archive_llm_enhancer_from_config()
         return AgentMissionRuntime(
             service=self,
             store=MissionStore(self.storage_dir),
             tool_registry=AgentToolRegistry(self),
+            llm=enhancer.llm if enhancer is not None else None,
         )
 
     def _project_dir(self, project_id: str) -> Path:
