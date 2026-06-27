@@ -206,8 +206,8 @@ class MultiAgentPipeline:
         agents: dict[str, AgentRoleResult],
     ) -> AgentRoleResult:
         archivist = agents.get("archivist")
-        archivist_entities = set(archivist.entity_ids if archivist else [])
-        archivist_evidence = set(archivist.evidence_card_ids if archivist else [])
+        archivist_entities = _unique(archivist.entity_ids if archivist else [])
+        archivist_evidence = _unique(archivist.evidence_card_ids if archivist else [])
         relation_ids = [relation.id for relation in draft.relations[:20]]
         hall_findings = [
             {
@@ -240,8 +240,8 @@ class MultiAgentPipeline:
                         f"Received {len(archivist_entities)} entry/candidate entities and "
                         f"{len(archivist_evidence)} evidence cards from Archivist."
                     ),
-                    "entity_ids": list(archivist_entities)[:8],
-                    "evidence_ids": list(archivist_evidence)[:6],
+                    "entity_ids": archivist_entities[:8],
+                    "evidence_ids": archivist_evidence[:6],
                 },
             )
         return AgentRoleResult(
@@ -897,7 +897,7 @@ def run_specialist_role(
     role: str,
     prior_agents: dict[str, AgentRoleResult] | None = None,
 ) -> AgentRoleResult:
-    """Run one deterministic specialist role for tool-call usage."""
+    """Run one deterministic specialist role with its missing dependencies."""
 
     pipeline = MultiAgentPipeline()
     agents = dict(prior_agents or {})
@@ -908,7 +908,28 @@ def run_specialist_role(
         "skeptic": pipeline._run_skeptic,
         "curator": pipeline._run_curator,
     }
-    runner = runners.get(role)
-    if runner is None:
+
+    def run_role(agent_name: str) -> None:
+        if agent_name in agents:
+            return
+        runner = runners.get(agent_name)
+        spec = AGENT_SPECS.get(agent_name)
+        if runner is None or spec is None:
+            raise ValueError(f"Unknown specialist role: {agent_name}")
+        for dependency in spec.depends_on:
+            run_role(dependency)
+        started_at = datetime.now(UTC).isoformat()
+        result = runner(draft, agents)
+        agents[agent_name] = _attach_agent_runtime_metadata(
+            result=result,
+            draft=draft,
+            spec=spec,
+            prior_agents=agents,
+            started_at=started_at,
+            completed_at=datetime.now(UTC).isoformat(),
+        )
+
+    if role not in runners:
         raise ValueError(f"Unknown specialist role: {role}")
-    return runner(draft, agents)
+    run_role(role)
+    return agents[role]

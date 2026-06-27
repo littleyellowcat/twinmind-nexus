@@ -7,6 +7,14 @@ from typing import Any
 
 from src.project_archive.types import AgentRoleResult, EvidenceCard, ProjectArchiveDraft
 
+MAX_GRAPH_SEARCH_LIMIT = 20
+MAX_NEIGHBORHOOD_NODES = 80
+MAX_NEIGHBORHOOD_RELATIONS = 120
+MAX_HYBRID_TOP_K = 12
+MAX_EVIDENCE_CARDS = 20
+MAX_ENTITY_RELATIONS = 50
+SPECIALIST_ROLES = {"archivist", "cartographer", "detective", "skeptic", "curator"}
+
 
 class ToolExecutionError(ValueError):
     """Raised when an Agent tool call is not approved or has invalid input."""
@@ -52,16 +60,21 @@ class AgentToolRegistry:
     def _list_halls(self, tool_input: dict[str, Any]) -> AgentToolResult:
         project_id = _required_str(tool_input, "project_id")
         draft = self.service.load_draft(project_id)
-        halls = [hall.to_dict() for hall in draft.halls]
-        entity_ids = _unique_id_list(
-            entity_id for hall in draft.halls for entity_id in hall.entity_ids
-        )
+        halls = [
+            {
+                "id": hall.id,
+                "name": hall.name,
+                "description": hall.description,
+                "entity_count": len(hall.entity_ids),
+            }
+            for hall in draft.halls
+        ]
         return AgentToolResult(
             tool_name="list_halls",
             summary=f"Listed {len(halls)} archive halls.",
             payload={"project_id": project_id, "halls": halls},
             evidence_ids=[],
-            entity_ids=entity_ids,
+            entity_ids=[],
             relation_ids=[],
         )
 
@@ -83,43 +96,100 @@ class AgentToolRegistry:
     def _graph_search(self, tool_input: dict[str, Any]) -> AgentToolResult:
         project_id = _required_str(tool_input, "project_id")
         query = _required_str(tool_input, "query")
-        limit = _positive_int(tool_input.get("limit", 20), "limit")
+        requested_limit = _positive_int(
+            tool_input.get("limit", MAX_GRAPH_SEARCH_LIMIT),
+            "limit",
+        )
+        effective_limit = min(requested_limit, MAX_GRAPH_SEARCH_LIMIT)
         results = self.service.search_graph_entities(
             project_id,
             query=query,
-            limit=limit,
+            limit=effective_limit,
         )
-        rows = [result.to_dict() for result in results]
+        rows = [result.to_dict() for result in results[:effective_limit]]
         return AgentToolResult(
             tool_name="graph_search",
             summary=f"Graph search returned {len(rows)} entities.",
-            payload={"project_id": project_id, "query": query, "results": rows},
+            payload={
+                "project_id": project_id,
+                "query": query,
+                "results": rows,
+                "metadata": {
+                    "requested_limit": requested_limit,
+                    "effective_limit": effective_limit,
+                    "truncated": requested_limit > effective_limit
+                    or len(results) > effective_limit,
+                },
+            },
             evidence_ids=_unique_id_list(
                 evidence_id
-                for result in results
+                for result in results[:effective_limit]
                 for evidence_id in getattr(result, "evidence_ids", [])
+            )[:MAX_EVIDENCE_CARDS],
+            entity_ids=_unique_id_list(
+                getattr(result, "entity_id", "") for result in results[:effective_limit]
             ),
-            entity_ids=_unique_id_list(getattr(result, "entity_id", "") for result in results),
             relation_ids=[],
         )
 
     def _graph_neighborhood(self, tool_input: dict[str, Any]) -> AgentToolResult:
         project_id = _required_str(tool_input, "project_id")
+        requested_node_limit = _positive_int(
+            tool_input.get("node_limit", MAX_NEIGHBORHOOD_NODES),
+            "node_limit",
+        )
+        requested_relation_limit = _positive_int(
+            tool_input.get("relation_limit", MAX_NEIGHBORHOOD_RELATIONS),
+            "relation_limit",
+        )
+        effective_node_limit = min(requested_node_limit, MAX_NEIGHBORHOOD_NODES)
+        effective_relation_limit = min(
+            requested_relation_limit,
+            MAX_NEIGHBORHOOD_RELATIONS,
+        )
         neighborhood = self.service.graph_neighborhood(
             project_id,
-            hall_id=_optional_str(tool_input.get("hall_id")),
-            focus_entity_id=_optional_str(tool_input.get("focus_entity_id")),
-            depth=_positive_int(tool_input.get("depth", 1), "depth"),
-            relation_types=_string_list(tool_input.get("relation_types", [])),
-            node_limit=_positive_int(tool_input.get("node_limit", 80), "node_limit"),
-            relation_limit=_positive_int(
-                tool_input.get("relation_limit", 120),
-                "relation_limit",
+            hall_id=_optional_str(tool_input.get("hall_id"), "hall_id"),
+            focus_entity_id=_optional_str(
+                tool_input.get("focus_entity_id"),
+                "focus_entity_id",
             ),
+            depth=_positive_int(tool_input.get("depth", 1), "depth"),
+            relation_types=_string_list(
+                tool_input.get("relation_types", []),
+                "relation_types",
+            ),
+            node_limit=effective_node_limit,
+            relation_limit=effective_relation_limit,
         )
         payload = neighborhood.to_dict()
-        nodes = payload.get("nodes", [])
-        relations = payload.get("relations", [])
+        raw_nodes = payload.get("nodes", [])
+        raw_relations = payload.get("relations", [])
+        raw_evidence_ids = _string_list(payload.get("evidence_ids", []), "evidence_ids")
+        nodes = raw_nodes[:effective_node_limit] if isinstance(raw_nodes, list) else []
+        relations = (
+            raw_relations[:effective_relation_limit]
+            if isinstance(raw_relations, list)
+            else []
+        )
+        evidence_ids = _unique_id_list(raw_evidence_ids)[:MAX_EVIDENCE_CARDS]
+        payload = {
+            **payload,
+            "nodes": nodes,
+            "relations": relations,
+            "evidence_ids": evidence_ids,
+            "metadata": {
+                "requested_node_limit": requested_node_limit,
+                "effective_node_limit": effective_node_limit,
+                "requested_relation_limit": requested_relation_limit,
+                "effective_relation_limit": effective_relation_limit,
+                "truncated": requested_node_limit > effective_node_limit
+                or requested_relation_limit > effective_relation_limit
+                or len(raw_nodes) > effective_node_limit
+                or len(raw_relations) > effective_relation_limit
+                or len(raw_evidence_ids) > MAX_EVIDENCE_CARDS,
+            },
+        }
         return AgentToolResult(
             tool_name="graph_neighborhood",
             summary=(
@@ -127,7 +197,7 @@ class AgentToolRegistry:
                 f"{len(relations)} relations."
             ),
             payload=payload,
-            evidence_ids=_unique_id_list(payload.get("evidence_ids", [])),
+            evidence_ids=evidence_ids,
             entity_ids=_unique_id_list(node.get("id") for node in nodes if isinstance(node, dict)),
             relation_ids=_unique_id_list(
                 relation.get("id") for relation in relations if isinstance(relation, dict)
@@ -139,14 +209,15 @@ class AgentToolRegistry:
 
         project_id = _required_str(tool_input, "project_id")
         query = _required_str(tool_input, "query")
-        top_k = _positive_int(tool_input.get("top_k", 8), "top_k")
-        hall_id = _optional_str(tool_input.get("hall_id"))
+        requested_top_k = _positive_int(tool_input.get("top_k", MAX_HYBRID_TOP_K), "top_k")
+        effective_top_k = min(requested_top_k, MAX_HYBRID_TOP_K)
+        hall_id = _optional_str(tool_input.get("hall_id"), "hall_id")
         storage_dir = getattr(self.service, "storage_dir", "data/project_archive")
         result = ProjectHybridRAGIndex(storage_dir).search(
             project_id=project_id,
             query=query,
             hall_id=hall_id,
-            top_k=top_k,
+            top_k=effective_top_k,
         )
         if result is None:
             return AgentToolResult(
@@ -156,14 +227,22 @@ class AgentToolRegistry:
                     "project_id": project_id,
                     "query": query,
                     "results": [],
-                    "metadata": {"enabled": False, "result_count": 0},
+                    "metadata": {
+                        "enabled": False,
+                        "result_count": 0,
+                        "requested_top_k": requested_top_k,
+                        "effective_top_k": effective_top_k,
+                        "truncated": requested_top_k > effective_top_k,
+                    },
                 },
                 evidence_ids=[],
                 entity_ids=[],
                 relation_ids=[],
             )
 
-        rows = [row.to_dict() for row in result.results]
+        result_rows = result.results[:effective_top_k]
+        rows = [row.to_dict() for row in result_rows]
+        metadata = result.to_metadata()
         return AgentToolResult(
             tool_name="hybrid_search",
             summary=f"Hybrid search returned {len(rows)} results.",
@@ -171,20 +250,30 @@ class AgentToolRegistry:
                 "project_id": project_id,
                 "query": query,
                 "results": rows,
-                "metadata": result.to_metadata(),
+                "metadata": {
+                    **metadata,
+                    "requested_top_k": requested_top_k,
+                    "effective_top_k": effective_top_k,
+                    "truncated": requested_top_k > effective_top_k
+                    or len(result.results) > effective_top_k,
+                },
             },
             evidence_ids=_unique_id_list(
-                row.metadata.get("evidence_id") for row in result.results
-            ),
-            entity_ids=_unique_id_list(row.metadata.get("entity_id") for row in result.results),
+                row.metadata.get("evidence_id") for row in result_rows
+            )[:MAX_EVIDENCE_CARDS],
+            entity_ids=_unique_id_list(row.metadata.get("entity_id") for row in result_rows),
             relation_ids=_unique_id_list(
-                row.metadata.get("relation_id") for row in result.results
+                row.metadata.get("relation_id") for row in result_rows
             ),
         )
 
     def _get_evidence(self, tool_input: dict[str, Any]) -> AgentToolResult:
         project_id = _required_str(tool_input, "project_id")
-        evidence_ids = _unique_id_list(tool_input.get("evidence_ids", []))
+        requested_evidence_ids = _string_list(
+            tool_input.get("evidence_ids", []),
+            "evidence_ids",
+        )
+        evidence_ids = _unique_id_list(requested_evidence_ids)[:MAX_EVIDENCE_CARDS]
         draft = self.service.load_draft(project_id)
         cards = _evidence_by_ids(draft, evidence_ids)
         found_ids = [card.id for card in cards]
@@ -194,6 +283,11 @@ class AgentToolRegistry:
             payload={
                 "project_id": project_id,
                 "evidence_cards": [card.to_dict() for card in cards],
+                "metadata": {
+                    "requested_count": len(requested_evidence_ids),
+                    "effective_count": len(evidence_ids),
+                    "truncated": len(requested_evidence_ids) > len(evidence_ids),
+                },
             },
             evidence_ids=found_ids,
             entity_ids=_unique_id_list(
@@ -215,12 +309,14 @@ class AgentToolRegistry:
             for relation in draft.relations
             if relation.source_id == entity_id or relation.target_id == entity_id
         ]
+        total_relation_count = len(relations)
+        relations = relations[:MAX_ENTITY_RELATIONS]
         neighbor_ids = _unique_id_list(
             relation.target_id if relation.source_id == entity_id else relation.source_id
             for relation in relations
         )
         neighbors = [item for item in draft.entities if item.id in set(neighbor_ids)]
-        evidence_ids = _unique_id_list(
+        all_evidence_ids = _unique_id_list(
             [
                 *entity.evidence_ids,
                 *[
@@ -230,6 +326,7 @@ class AgentToolRegistry:
                 ],
             ]
         )
+        evidence_ids = all_evidence_ids[:MAX_EVIDENCE_CARDS]
         cards = _evidence_by_ids(draft, evidence_ids)
         found_evidence_ids = [card.id for card in cards]
         return AgentToolResult(
@@ -243,6 +340,13 @@ class AgentToolRegistry:
                 "relations": [relation.to_dict() for relation in relations],
                 "neighbor_entities": [neighbor.to_dict() for neighbor in neighbors],
                 "evidence_cards": [card.to_dict() for card in cards],
+                "metadata": {
+                    "total_relation_count": total_relation_count,
+                    "returned_relation_count": len(relations),
+                    "returned_evidence_count": len(cards),
+                    "truncated": total_relation_count > len(relations)
+                    or len(all_evidence_ids) > len(evidence_ids),
+                },
             },
             evidence_ids=found_evidence_ids,
             entity_ids=[entity_id],
@@ -250,17 +354,23 @@ class AgentToolRegistry:
         )
 
     def _run_specialist_agent(self, tool_input: dict[str, Any]) -> AgentToolResult:
-        from src.project_archive.multi_agent import run_specialist_role
-
         project_id = _required_str(tool_input, "project_id")
         role = _required_str(tool_input, "role")
+        if role not in SPECIALIST_ROLES:
+            raise ToolExecutionError(f"Unknown specialist role: {role}")
+
+        from src.project_archive.multi_agent import run_specialist_role
+
         draft = self.service.load_draft(project_id)
         prior_agents = _prior_agents(tool_input.get("prior_agents"))
-        result = run_specialist_role(
-            draft=draft,
-            role=role,
-            prior_agents=prior_agents,
-        )
+        try:
+            result = run_specialist_role(
+                draft=draft,
+                role=role,
+                prior_agents=prior_agents,
+            )
+        except ValueError as exc:
+            raise ToolExecutionError(str(exc)) from exc
         return AgentToolResult(
             tool_name="run_specialist_agent",
             summary=result.summary,
@@ -299,23 +409,42 @@ def _unique_id_list(values: Any) -> list[str]:
     return unique
 
 
-def _optional_str(value: Any) -> str | None:
-    return value.strip() if isinstance(value, str) and value.strip() else None
+def _optional_str(value: Any, key: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ToolExecutionError(f"Agent tool input field must be a string: {key}")
+    return value.strip() or None
 
 
-def _string_list(value: Any) -> list[str]:
+def _string_list(value: Any, key: str) -> list[str]:
     if value is None:
         return []
     if not isinstance(value, list):
-        raise ToolExecutionError("Agent tool input field must be a list of strings.")
-    return [item.strip() for item in value if isinstance(item, str) and item.strip()]
+        raise ToolExecutionError(f"Agent tool input field must be a list of strings: {key}")
+    rows: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            raise ToolExecutionError(
+                f"Agent tool input field must be a list of strings: {key}"
+            )
+        stripped = item.strip()
+        if stripped:
+            rows.append(stripped)
+    return rows
 
 
 def _positive_int(value: Any, key: str) -> int:
-    try:
+    if isinstance(value, bool):
+        raise ToolExecutionError(f"Agent tool input requires integer field: {key}")
+    if isinstance(value, int):
+        parsed = value
+    elif isinstance(value, float) and value.is_integer():
         parsed = int(value)
-    except (TypeError, ValueError) as exc:
-        raise ToolExecutionError(f"Agent tool input requires integer field: {key}") from exc
+    elif isinstance(value, str) and value.strip().isdigit():
+        parsed = int(value.strip())
+    else:
+        raise ToolExecutionError(f"Agent tool input requires integer field: {key}")
     if parsed < 1:
         raise ToolExecutionError(f"Agent tool input field must be positive: {key}")
     return parsed
