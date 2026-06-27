@@ -678,8 +678,8 @@ def test_service_starts_loads_traces_and_updates_agent_mission(tmp_path):
     )
 
     planned = service.create_agent_mission(
-        project_id="demo",
-        goal="Understand architecture",
+        "demo",
+        "Understand architecture",
         max_tasks=2,
         max_steps_per_task=2,
     )
@@ -691,5 +691,10 @@ def test_service_starts_loads_traces_and_updates_agent_mission(tmp_path):
     assert planned.status == "planned"
     assert loaded.id == mission.id
     assert trace
+    mission_path = tmp_path / "demo" / "agent_missions" / f"{mission.id}.json"
+    persisted = json.loads(mission_path.read_text(encoding="utf-8"))
+
     assert stopped.status == "stopped"
-    assert (tmp_path / "demo" / "agent_missions" / f"{mission.id}.json").exists()
+    assert persisted["id"] == mission.id
+    assert persisted["status"] == "stopped"
+    assert mission_path.exists()

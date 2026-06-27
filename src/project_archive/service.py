@@ -315,8 +315,8 @@ class ProjectArchiveService:
     def create_agent_mission(
         self,
         project_id: str,
-        *,
         goal: str,
+        *,
         max_tasks: int = 5,
         max_steps_per_task: int = 4,
     ) -> AgentMission:
@@ -337,8 +337,8 @@ class ProjectArchiveService:
     def start_agent_mission(
         self,
         project_id: str,
-        *,
         goal: str,
+        *,
         max_tasks: int = 5,
         max_steps_per_task: int = 4,
     ) -> AgentMission:
