@@ -1480,8 +1480,14 @@ const missionStatusLabel = (status: string, locale: Locale) => {
 const isMissionTerminal = (mission: { status: string } | null) =>
   Boolean(mission && ["completed", "complete", "partial", "failed", "stopped", "cancelled"].includes(mission.status));
 
-const REACT_MISSION_POLL_ATTEMPTS = 30;
 const REACT_MISSION_POLL_DELAY_MS = 1000;
+const REACT_MISSION_POLL_GRACE_ATTEMPTS = 8;
+
+const reactMissionPollAttempts = (mission: AgentMission) => {
+  const timeoutSeconds = Number(mission.budget.timeout_seconds);
+  if (!Number.isFinite(timeoutSeconds) || timeoutSeconds <= 0) return 90 + REACT_MISSION_POLL_GRACE_ATTEMPTS;
+  return Math.ceil((timeoutSeconds * 1000) / REACT_MISSION_POLL_DELAY_MS) + REACT_MISSION_POLL_GRACE_ATTEMPTS;
+};
 
 const wait = (delayMs: number) => new Promise<void>((resolve) => window.setTimeout(resolve, delayMs));
 
@@ -3180,9 +3186,11 @@ export function App() {
       if (!isCurrentReactRequest()) return;
       updateReactMissionState(nextMission);
       setReactTrace(nextMission.trace_events);
+      setIsStartingReactMission(false);
 
       let latestMission = nextMission;
-      for (let attempt = 0; attempt < REACT_MISSION_POLL_ATTEMPTS; attempt += 1) {
+      const pollAttempts = reactMissionPollAttempts(nextMission);
+      for (let attempt = 0; attempt < pollAttempts; attempt += 1) {
         if (attempt > 0) await wait(REACT_MISSION_POLL_DELAY_MS);
         if (!isCurrentReactRequest()) return;
         const [polledMission, latestTrace] = await Promise.all([
