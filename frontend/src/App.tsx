@@ -18,26 +18,32 @@ import {
   Upload,
   X,
 } from "lucide-react";
-import type { KeyboardEvent, ReactNode } from "react";
+import type { CSSProperties, KeyboardEvent, ReactNode } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   fetchAgentStatus,
+  fetchAgentMissionTrace,
   fetchArchiveDraft,
   fetchGraphNeighborhood,
   fetchGraphSummary,
+  fetchHybridRagStatus,
   fetchMissionGraphOverlay,
   fetchProjectAgentReport,
   fetchProjectArchive,
   runArchiveQuery,
   runProjectAgentReportJob,
+  searchGraphEntities,
+  startAgentMission,
   startArchitectureMission,
+  updateAgentMissionStatus,
   updateMissionStatus,
   uploadProjectArchive,
 } from "./api";
-import { archiveDraft as fallbackArchiveDraft } from "./archiveData";
 import type {
+  AgentMission,
   AgentReport,
   AgentStatus,
+  AgentTraceEvent,
   ArchiveDraft,
   ArchiveHall,
   ArchiveRelation,
@@ -46,7 +52,9 @@ import type {
   GraphExplorerNode,
   GraphExplorerRelation,
   GraphNeighborhood,
+  GraphSearchResult,
   GraphSummary,
+  HybridRagStatus,
   MissionGraphOverlay,
   MissionTask,
   ProjectAgentReport,
@@ -64,6 +72,7 @@ type JobHistoryItem = {
   progress: number;
   message: string;
 };
+type JobHistoryByProjectId = Record<string, JobHistoryItem[]>;
 
 const copy = {
   zh: {
@@ -73,11 +82,18 @@ const copy = {
     loadingArchive: "正在连接档案 API",
     loadingSelectedArchive: "正在切换档案",
     archiveSelector: "项目档案",
+    archiveSelectorPlaceholder: "选择项目档案",
     overviewPage: "档案总览",
     graphPage: "图谱探索",
     agentPage: "Agent 分析",
     expandGraph: "放大图谱",
     graphExplorer: "图谱探索",
+    allGraph: "全部图谱",
+    searchEntities: "搜索实体",
+    graphSearchPlaceholder: "搜索全档案实体、文件或配置",
+    graphSearchEmpty: "没有匹配的实体",
+    graphSearchHint: "输入关键词后按 Enter 聚焦第一个结果",
+    graphStartScore: "分",
     missionControl: "自主任务",
     recommendedStarts: "推荐起点",
     entityDetails: "实体详情",
@@ -100,7 +116,10 @@ const copy = {
       evidence: "证据",
     },
     intake: "项目入口",
-    intakeCopy: "拖入项目 ZIP。文件夹上传和后端 API 摄取会在下一步接入。",
+    intakeCopy: "选择项目 ZIP，点击生成档案后才会解析和展示内容。",
+    cleanStartTitle: "还没有打开项目档案",
+    cleanStartCopy: "这里会保持干净状态。你可以上传 ZIP 生成新档案，或从右上角选择一个已有项目档案查看。",
+    noArchiveSelected: "请先上传生成档案，或选择一个已有项目档案。",
     chooseZip: "选择 ZIP",
     uploadLabel: "上传项目 ZIP",
     architectureFirst: "架构优先",
@@ -193,6 +212,8 @@ const copy = {
     llmSource: "模型",
     deterministicSource: "规则 Agent",
     modelStatus: "模型状态",
+    hybridRag: "Hybrid RAG",
+    multimodal: "多模态",
     agentProof: "Agent 工作证明",
     taskHistory: "任务历史",
     noTaskHistory: "还没有任务记录。运行分析或生成档案后会出现。",
@@ -204,6 +225,9 @@ const copy = {
     modelEnhanced: "模型增强",
     ruleCompleted: "规则完成",
     modelFallback: "模型增强未采纳",
+    toolsUsed: "工具",
+    validation: "验证",
+    workLog: "工作记录",
   },
   en: {
     subtitle: "Project archive observatory",
@@ -212,11 +236,18 @@ const copy = {
     loadingArchive: "Connecting archive API",
     loadingSelectedArchive: "Switching archive",
     archiveSelector: "Project archive",
+    archiveSelectorPlaceholder: "Select archive",
     overviewPage: "Archive overview",
     graphPage: "Graph Explorer",
     agentPage: "Agent analysis",
     expandGraph: "Expand graph",
     graphExplorer: "Graph Explorer",
+    allGraph: "All graph",
+    searchEntities: "Search entities",
+    graphSearchPlaceholder: "Search archive entities, files, or config",
+    graphSearchEmpty: "No matching entities",
+    graphSearchHint: "Type a keyword and press Enter to focus the first result",
+    graphStartScore: "pts",
     missionControl: "Mission control",
     recommendedStarts: "Recommended starts",
     entityDetails: "Entity details",
@@ -239,7 +270,10 @@ const copy = {
       evidence: "Evidence",
     },
     intake: "Project intake",
-    intakeCopy: "Drop a repository ZIP here. Local folder upload and API ingestion come next.",
+    intakeCopy: "Choose a repository ZIP. Nothing is parsed or shown until you create an archive.",
+    cleanStartTitle: "No project archive is open",
+    cleanStartCopy: "This page stays clean until you upload a ZIP or select an existing archive from the top-right switcher.",
+    noArchiveSelected: "Upload a ZIP or select an existing project archive first.",
     chooseZip: "Choose ZIP",
     uploadLabel: "Upload project ZIP",
     architectureFirst: "Architecture first",
@@ -332,6 +366,8 @@ const copy = {
     llmSource: "Model",
     deterministicSource: "Rule Agent",
     modelStatus: "Model status",
+    hybridRag: "Hybrid RAG",
+    multimodal: "Multimodal",
     agentProof: "Agent work proof",
     taskHistory: "Task history",
     noTaskHistory: "No task history yet. Run analysis or create an archive to populate it.",
@@ -343,6 +379,9 @@ const copy = {
     modelEnhanced: "Model enhanced",
     ruleCompleted: "Rules completed",
     modelFallback: "Model enhancement not adopted",
+    toolsUsed: "Tools",
+    validation: "Validation",
+    workLog: "Work log",
   },
 } satisfies Record<Locale, Record<string, unknown>>;
 
@@ -352,6 +391,13 @@ const scopeOptions = [
   { profile: "docs", labelKey: "docsFirst" },
   { profile: "tests", labelKey: "testsQuality" },
 ] satisfies { profile: ScanProfile; labelKey: keyof typeof copy.zh }[];
+
+const agentModeOptions = [
+  { mode: "architecture_tour", labelKey: "architectureFirst" },
+  { mode: "impact_analysis", labelKey: "impactAnalysis" },
+  { mode: "risk_audit", labelKey: "riskAudit" },
+  { mode: "evidence_qa", labelKey: "evidenceQa" },
+] satisfies { mode: ScopeMode; labelKey: keyof typeof copy.zh }[];
 
 const formatNumber = (value: number) => new Intl.NumberFormat("en-US").format(value);
 
@@ -409,6 +455,8 @@ type VisibleGraphNode = {
   y: number;
   tone: GraphTone;
   isSelected: boolean;
+  isDimmed: boolean;
+  isSearchMatch: boolean;
 };
 
 type VisibleGraphEdge = ArchiveRelation & {
@@ -417,6 +465,8 @@ type VisibleGraphEdge = ArchiveRelation & {
   x2: number;
   y2: number;
   isSelected: boolean;
+  isContextEdge: boolean;
+  isDimmed: boolean;
 };
 
 const compactGraphLabel = (label: string, maxLength = 24) => {
@@ -444,7 +494,51 @@ const rankRelations = (relations: ArchiveRelation[], selectedRelationId: string)
   });
 };
 
-const buildVisibleGraph = (relations: ArchiveRelation[], selectedRelationId: string) => {
+const relationBelongsToHall = (relation: ArchiveRelation, hallId: string) =>
+  relation.hall === hallId;
+
+const evidenceBelongsToHall = (card: EvidenceCard, hallId: string) =>
+  card.hall === hallId;
+
+const relationMatchesSearch = (
+  relation: ArchiveRelation,
+  query: string,
+  evidenceById: Map<string, EvidenceCard>,
+) => {
+  const relatedEvidence = relation.evidenceIds
+    .map((evidenceId) => evidenceById.get(evidenceId))
+    .filter((card): card is EvidenceCard => Boolean(card));
+  return [
+    relation.source,
+    relation.type,
+    relation.target,
+    ...relatedEvidence.flatMap((card) => [
+      card.title,
+      card.titleZh,
+      card.sourcePath,
+      card.sourceType,
+      card.snippet,
+      card.snippetZh,
+    ]),
+  ].some((value) => value.toLowerCase().includes(query));
+};
+
+const evidenceMatchesSearch = (card: EvidenceCard, query: string) =>
+  [
+    card.title,
+    card.titleZh,
+    card.sourcePath,
+    card.sourceType,
+    card.snippet,
+    card.snippetZh,
+    card.lineRange,
+  ].some((value) => value.toLowerCase().includes(query));
+
+const buildVisibleGraph = (
+  relations: ArchiveRelation[],
+  selectedRelationId: string,
+  searchMatchedNodeLabels: Set<string>,
+) => {
   const usableRelations = relations.filter((relation) => relation.source && relation.target);
   const rankedRelations = rankRelations(usableRelations, selectedRelationId);
   const nodeLabels = new Map<string, string>();
@@ -469,6 +563,7 @@ const buildVisibleGraph = (relations: ArchiveRelation[], selectedRelationId: str
     selectedNodeNames.add(selectedRelation.source);
     selectedNodeNames.add(selectedRelation.target);
   }
+  const hasSelection = Boolean(selectedRelation);
 
   const nodes = Array.from(nodeLabels.entries()).map(([id, label], index, allNodes) => {
     const nodeCount = allNodes.length;
@@ -477,8 +572,16 @@ const buildVisibleGraph = (relations: ArchiveRelation[], selectedRelationId: str
     const isSingle = nodeCount <= 1;
     const angle = -Math.PI / 2 + (index / Math.max(nodeCount, 1)) * Math.PI * 2 + (nodeCount > 9 ? (index % 2) * 0.16 : 0);
     const radiusScale = nodeCount > 10 && index % 2 ? 0.72 : 1;
-    const x = isSingle ? centerX : centerX + Math.cos(angle) * 270 * radiusScale;
-    const y = isSingle ? centerY : centerY + Math.sin(angle) * 150 * radiusScale;
+    let x = isSingle ? centerX : centerX + Math.cos(angle) * 270 * radiusScale;
+    let y = isSingle ? centerY : centerY + Math.sin(angle) * 150 * radiusScale;
+
+    if (selectedRelation?.source === id) {
+      x = centerX - 92;
+      y = centerY;
+    } else if (selectedRelation?.target === id) {
+      x = centerX + 92;
+      y = centerY;
+    }
 
     return {
       id,
@@ -487,6 +590,8 @@ const buildVisibleGraph = (relations: ArchiveRelation[], selectedRelationId: str
       y: Math.min(370, Math.max(60, y)),
       tone: selectedNodeNames.has(id) ? "accent" : graphToneCycle[index % graphToneCycle.length],
       isSelected: selectedNodeNames.has(id),
+      isDimmed: hasSelection && !selectedNodeNames.has(id),
+      isSearchMatch: searchMatchedNodeLabels.has(id),
     };
   });
 
@@ -496,18 +601,26 @@ const buildVisibleGraph = (relations: ArchiveRelation[], selectedRelationId: str
       const source = nodeById.get(relation.source);
       const target = nodeById.get(relation.target);
       if (!source || !target) return null;
+      const isSelected = relation.id === selectedRelationId;
+      const isContextEdge =
+        Boolean(selectedRelation) &&
+        !isSelected &&
+        (selectedNodeNames.has(relation.source) || selectedNodeNames.has(relation.target));
       return {
         ...relation,
         x1: source.x,
         y1: source.y,
         x2: target.x,
         y2: target.y,
-        isSelected: relation.id === selectedRelationId,
+        isSelected,
+        isContextEdge,
+        isDimmed: hasSelection && !isSelected && !isContextEdge,
       };
     })
-    .filter((relation): relation is VisibleGraphEdge => Boolean(relation));
+    .filter((relation): relation is VisibleGraphEdge => Boolean(relation))
+    .sort((left, right) => Number(left.isSelected) - Number(right.isSelected));
 
-  return { nodes, edges, totalRelations: usableRelations.length };
+  return { nodes, edges, selectedRelation, totalRelations: usableRelations.length };
 };
 
 function AppHeader({
@@ -565,6 +678,7 @@ function AppHeader({
             value={selectedArchiveId}
             onChange={(event) => onArchiveChange(event.currentTarget.value)}
           >
+            <option value="">{String(t.archiveSelectorPlaceholder)}</option>
             {archiveIds.map((projectId) => (
               <option key={projectId} value={projectId}>
                 {projectId}
@@ -765,6 +879,31 @@ function UploadDock({
   );
 }
 
+function EmptyArchiveState({
+  archiveCount,
+  locale,
+}: {
+  archiveCount: number;
+  locale: Locale;
+}) {
+  const t = copy[locale];
+  return (
+    <section className="empty-archive panel" aria-label={String(t.cleanStartTitle)}>
+      <div className="empty-archive-icon" aria-hidden="true">
+        <Archive size={22} />
+      </div>
+      <div>
+        <span className="eyebrow">{t.archiveObservatory}</span>
+        <h2>{String(t.cleanStartTitle)}</h2>
+        <p>{String(t.cleanStartCopy)}</p>
+        <div className="empty-archive-actions">
+          <span className="pill strong">{archiveCount ? `${archiveCount} ${String(t.archiveSelector)}` : String(t.noArchiveSelected)}</span>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function HallRail({
   archiveDraft,
   selectedHallId,
@@ -812,6 +951,7 @@ function HallRail({
 }
 
 function StarMap({
+  evidenceCards,
   hall,
   isGraphHintVisible,
   relations,
@@ -819,12 +959,15 @@ function StarMap({
   onExpandGraph,
   onGraphHintClose,
   onGraphHintShow,
+  onEvidenceSelect,
+  onRelationClear,
   onRelationSelect,
   searchQuery,
   searchVisible,
   selectedRelationId,
   onSearchChange,
 }: {
+  evidenceCards: EvidenceCard[];
   hall: ArchiveHall;
   isGraphHintVisible: boolean;
   relations: ArchiveRelation[];
@@ -832,6 +975,8 @@ function StarMap({
   onExpandGraph: () => void;
   onGraphHintClose: () => void;
   onGraphHintShow: () => void;
+  onEvidenceSelect: (card: EvidenceCard) => void;
+  onRelationClear: () => void;
   onRelationSelect: (relation: ArchiveRelation) => void;
   searchQuery: string;
   searchVisible: boolean;
@@ -839,19 +984,33 @@ function StarMap({
   onSearchChange: (query: string) => void;
 }) {
   const t = copy[locale];
-  const visibleRelations = relations.filter((relation) => relation.hall === hall.id);
-  const fallbackRelations = visibleRelations.length ? visibleRelations : relations.slice(0, 12);
+  const visibleRelations = relations.filter((relation) => relationBelongsToHall(relation, hall.id));
+  const visibleEvidenceCards = evidenceCards.filter((card) => evidenceBelongsToHall(card, hall.id));
+  const evidenceById = useMemo(
+    () => new Map(evidenceCards.map((card) => [card.id, card])),
+    [evidenceCards],
+  );
   const normalizedQuery = searchQuery.trim().toLowerCase();
   const filteredRelations = normalizedQuery
-    ? fallbackRelations.filter((relation) =>
-        [relation.source, relation.type, relation.target].some((value) =>
-          value.toLowerCase().includes(normalizedQuery),
-        ),
+    ? visibleRelations.filter((relation) =>
+        relationMatchesSearch(relation, normalizedQuery, evidenceById),
       )
-    : fallbackRelations;
+    : visibleRelations;
+  const matchedEvidenceCards = normalizedQuery
+    ? visibleEvidenceCards.filter((card) => evidenceMatchesSearch(card, normalizedQuery))
+    : [];
+  const searchMatchedNodeLabels = useMemo(() => {
+    if (!normalizedQuery) return new Set<string>();
+    const labels = new Set<string>();
+    filteredRelations.forEach((relation) => {
+      if (relation.source.toLowerCase().includes(normalizedQuery)) labels.add(relation.source);
+      if (relation.target.toLowerCase().includes(normalizedQuery)) labels.add(relation.target);
+    });
+    return labels;
+  }, [filteredRelations, normalizedQuery]);
   const visibleGraph = useMemo(
-    () => buildVisibleGraph(filteredRelations, selectedRelationId),
-    [filteredRelations, selectedRelationId],
+    () => buildVisibleGraph(filteredRelations, selectedRelationId, searchMatchedNodeLabels),
+    [filteredRelations, searchMatchedNodeLabels, selectedRelationId],
   );
   const graphCounter =
     locale === "zh"
@@ -861,6 +1020,26 @@ function StarMap({
     locale === "zh"
       ? "当前展厅还没有可展示的关系。换一个展厅或清空搜索试试。"
       : "No relations are available for this hall. Try another hall or clear search.";
+  const searchResultText =
+    locale === "zh"
+      ? `匹配 ${formatNumber(filteredRelations.length)} 条关系 / ${formatNumber(matchedEvidenceCards.length)} 张证据`
+      : `${formatNumber(filteredRelations.length)} relations / ${formatNumber(matchedEvidenceCards.length)} evidence cards`;
+  const clearSearchText = locale === "zh" ? "清空搜索" : "Clear search";
+  const handleSearchKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    if (filteredRelations[0]) {
+      onRelationSelect(filteredRelations[0]);
+      return;
+    }
+    if (matchedEvidenceCards[0]) {
+      onEvidenceSelect(matchedEvidenceCards[0]);
+    }
+  };
+  const handleClearSearch = () => {
+    onSearchChange("");
+    onRelationClear();
+  };
 
   return (
     <main className="star-workspace panel" aria-label="Star map workspace">
@@ -882,15 +1061,33 @@ function StarMap({
         </div>
       </div>
       {(searchVisible || searchQuery) ? (
-        <label className="graph-search">
-          <Search size={16} />
-          <input
-            autoFocus={searchVisible}
-            value={searchQuery}
-            placeholder={String(t.searchPlaceholder)}
-            onChange={(event) => onSearchChange(event.currentTarget.value)}
-          />
-        </label>
+        <div className="graph-search-wrap">
+          <label className="graph-search">
+            <Search size={16} />
+            <input
+              autoFocus={searchVisible}
+              value={searchQuery}
+              placeholder={String(t.searchPlaceholder)}
+              onChange={(event) => onSearchChange(event.currentTarget.value)}
+              onKeyDown={handleSearchKeyDown}
+            />
+            {searchQuery ? (
+              <button className="icon-button subtle" onClick={handleClearSearch} type="button" title={clearSearchText}>
+                <X size={14} />
+              </button>
+            ) : null}
+          </label>
+          {searchQuery ? (
+            <div className="graph-search-results">
+              <span>{searchResultText}</span>
+              {matchedEvidenceCards.slice(0, 3).map((card) => (
+                <button key={card.id} onClick={() => onEvidenceSelect(card)} type="button">
+                  {compactGraphLabel(card.sourcePath, 32)}
+                </button>
+              ))}
+            </div>
+          ) : null}
+        </div>
       ) : null}
       <div className="graph-stage" aria-label={t.graphAria as string}>
         {visibleGraph.nodes.length ? (
@@ -911,7 +1108,9 @@ function StarMap({
             <path className="orbit orbit-b" d="M161 290 C211 134 482 75 612 184 C547 333 298 367 161 290Z" />
             {visibleGraph.edges.map((edge) => (
               <line
-                className={`graph-edge ${edge.isSelected ? "is-selected" : ""}`}
+                className={`graph-edge ${edge.isSelected ? "is-selected" : ""} ${
+                  edge.isContextEdge ? "is-context" : ""
+                } ${edge.isDimmed ? "is-dimmed" : ""}`}
                 key={edge.id}
                 markerEnd={edge.isSelected ? "url(#graphArrowSelected)" : "url(#graphArrow)"}
                 x1={edge.x1}
@@ -924,6 +1123,8 @@ function StarMap({
             ))}
             {visibleGraph.nodes.map((node) => (
               <GraphNode
+                isDimmed={node.isDimmed}
+                isSearchMatch={node.isSearchMatch}
                 isSelected={node.isSelected}
                 key={node.id}
                 label={node.label}
@@ -949,6 +1150,20 @@ function StarMap({
           </div>
         ) : null}
       </div>
+      {visibleGraph.selectedRelation ? (
+        <button
+          className="relation-focus-card"
+          onClick={onRelationClear}
+          type="button"
+          aria-label={locale === "zh" ? "关闭当前关系聚焦" : "Close focused relation"}
+        >
+          <span>{locale === "zh" ? "当前关系" : "Focused relation"}</span>
+          <strong>{compactGraphLabel(visibleGraph.selectedRelation.source, 38)}</strong>
+          <code>{visibleGraph.selectedRelation.type}</code>
+          <strong>{compactGraphLabel(visibleGraph.selectedRelation.target, 38)}</strong>
+          <X size={15} />
+        </button>
+      ) : null}
       <div className="relation-table" aria-label="Relation browser">
         <div className="table-head">
           <span>{t.source}</span>
@@ -979,12 +1194,16 @@ function StarMap({
 }
 
 function GraphNode({
+  isDimmed,
+  isSearchMatch,
   isSelected,
   label,
   tone,
   x,
   y,
 }: {
+  isDimmed: boolean;
+  isSearchMatch: boolean;
   isSelected: boolean;
   label: string;
   tone: GraphTone;
@@ -993,11 +1212,11 @@ function GraphNode({
 }) {
   const displayLabel = compactGraphLabel(label);
   return (
-    <g className={`graph-node ${tone} ${isSelected ? "is-selected" : ""}`}>
+    <g className={`graph-node ${tone} ${isSelected ? "is-selected" : ""} ${isSearchMatch ? "is-search-match" : ""} ${isDimmed ? "is-dimmed" : ""}`}>
       <title>{label}</title>
-      <circle className="node-glow" cx={x} cy={y} r="42" />
-      <circle cx={x} cy={y} r="14" />
-      <text textAnchor="middle" x={x} y={y + 34}>
+      <circle className="node-glow" cx={x} cy={y} r={isSelected ? 62 : 42} />
+      <circle cx={x} cy={y} r={isSelected ? 20 : 14} />
+      <text textAnchor="middle" x={x} y={y + (isSelected ? 42 : 34)}>
         {displayLabel}
       </text>
     </g>
@@ -1018,8 +1237,11 @@ function EvidenceDrawer({
   selectedEvidenceId: string;
 }) {
   const t = copy[locale];
-  const visibleCards = cards.filter((card) => card.hall === hall.id);
-  const fallbackCards = visibleCards.length ? visibleCards : cards;
+  const visibleCards = cards.filter((card) => evidenceBelongsToHall(card, hall.id));
+  const emptyText =
+    locale === "zh"
+      ? "当前展厅还没有直接绑定的证据。可以到图谱探索页查看实体级证据链。"
+      : "No evidence is directly bound to this hall yet. Open Graph Explorer for entity-level evidence.";
 
   return (
     <aside className="evidence panel" aria-label="Evidence drawer">
@@ -1036,34 +1258,40 @@ function EvidenceDrawer({
         <p>{hallRisk(hall, locale)}</p>
       </div>
       <div className="evidence-list">
-        {fallbackCards.slice(0, 4).map((card) => (
-          <button
-            className={`evidence-card ${card.id === selectedEvidenceId ? "is-active" : ""}`}
-            key={card.id}
-            onClick={() => onEvidenceSelect(card)}
-            type="button"
-          >
-            <div className="evidence-meta">
-              <span>{evidenceSourceType(card, locale)}</span>
-              <span>{evidenceLineRange(card, locale)}</span>
-            </div>
-            <h3>{evidenceTitle(card, locale)}</h3>
-            <code>{card.sourcePath}</code>
-            <p>{evidenceSnippet(card, locale)}</p>
-          </button>
-        ))}
+        {visibleCards.length ? (
+          visibleCards.slice(0, 4).map((card) => (
+            <button
+              className={`evidence-card ${card.id === selectedEvidenceId ? "is-active" : ""}`}
+              key={card.id}
+              onClick={() => onEvidenceSelect(card)}
+              type="button"
+            >
+              <div className="evidence-meta">
+                <span>{evidenceSourceType(card, locale)}</span>
+                <span>{evidenceLineRange(card, locale)}</span>
+              </div>
+              <h3>{evidenceTitle(card, locale)}</h3>
+              <code>{card.sourcePath}</code>
+              <p>{evidenceSnippet(card, locale)}</p>
+            </button>
+          ))
+        ) : (
+          <div className="evidence-empty">{emptyText}</div>
+        )}
       </div>
     </aside>
   );
 }
 
 function AgentCommandBar({
+  evidenceCards,
   hall,
   locale,
   onNotify,
   projectId,
   scopeMode,
 }: {
+  evidenceCards: EvidenceCard[];
   hall: ArchiveHall;
   locale: Locale;
   onNotify: (message: string) => void;
@@ -1071,26 +1299,50 @@ function AgentCommandBar({
   scopeMode: ScopeMode;
 }) {
   const t = copy[locale];
-  const defaultQuestion = `${t.agentPromptPrefix} ${hallTitle(hall, locale)}, ${t.agentPromptSuffix}`;
+  const hallSamples = hall.sampleEntities.slice(0, 5).join(", ");
+  const defaultQuestion =
+    locale === "zh"
+      ? `基于当前展厅的实体、关系和证据分析「${hallTitle(hall, locale)}」。展厅说明：${hallDescription(hall, locale)}。代表实体：${hallSamples || "暂无"}。请追踪影响，并引用证据。`
+      : `Analyze "${hallTitle(hall, locale)}" using the current hall's entities, relations, and evidence. Hall description: ${hallDescription(hall, locale)}. Representative entities: ${hallSamples || "none"}. Trace impact and cite evidence.`;
   const [question, setQuestion] = useState(defaultQuestion);
+  const [mode, setMode] = useState<ScopeMode>(scopeMode);
   const [report, setReport] = useState<AgentReport | null>(null);
   const [isRunning, setIsRunning] = useState(false);
+  const [error, setError] = useState("");
+  const evidenceById = useMemo(
+    () => new Map(evidenceCards.map((card) => [card.id, card])),
+    [evidenceCards],
+  );
+  const citedEvidence = report?.evidence_card_ids
+    .map((id) => evidenceById.get(id))
+    .filter((card): card is EvidenceCard => Boolean(card)) ?? [];
 
   useEffect(() => {
     setQuestion(defaultQuestion);
+    setReport(null);
+    setError("");
   }, [defaultQuestion]);
 
   const handleRunReport = async () => {
+    if (isRunning) return;
     setIsRunning(true);
+    setError("");
     try {
-      const nextReport = await runArchiveQuery(projectId, question.trim() || defaultQuestion, scopeMode);
+      const nextReport = await runArchiveQuery(projectId, question.trim() || defaultQuestion, mode, hall.id);
       setReport(nextReport);
       onNotify(String(t.reportReady));
-    } catch {
-      onNotify(String(t.reportFailed));
+    } catch (nextError) {
+      const message = nextError instanceof Error ? nextError.message : String(t.reportFailed);
+      setError(message);
+      onNotify(`${t.reportFailed}: ${message}`);
     } finally {
       setIsRunning(false);
     }
+  };
+  const handleQuestionKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key !== "Enter" || event.shiftKey) return;
+    event.preventDefault();
+    void handleRunReport();
   };
 
   return (
@@ -1099,29 +1351,66 @@ function AgentCommandBar({
         <Command size={18} />
         {t.agentCommand}
       </div>
+      <label className="agent-mode-select">
+        <select value={mode} onChange={(event) => setMode(event.currentTarget.value as ScopeMode)}>
+          {agentModeOptions.map((option) => (
+            <option key={option.mode} value={option.mode}>
+              {String(t[option.labelKey])}
+            </option>
+          ))}
+        </select>
+        <ChevronDown size={15} />
+      </label>
       <label className="agent-input">
         <Sparkles size={16} />
         <input
           value={question}
           onChange={(event) => setQuestion(event.currentTarget.value)}
+          onKeyDown={handleQuestionKeyDown}
         />
       </label>
       <button className="primary-button" disabled={isRunning} onClick={handleRunReport} type="button">
         <Braces size={16} />
         {isRunning ? t.reportRunning : t.runReport}
       </button>
+      {error ? <div className="agent-report-error">{error}</div> : null}
       {report ? (
         <div className="agent-report">
-          <strong>{report.summary}</strong>
-          <span>
-            {t.confidence}: {Math.round(report.confidence * 100)}%
-          </span>
-          <span>
-            {t.llmSource}:{" "}
-            {report.metadata?.llm?.enabled && !report.metadata.llm.fallback
-              ? `${report.metadata.llm.provider ?? "llm"} · ${report.metadata.llm.model ?? ""}`
-              : t.deterministicSource}
-          </span>
+          <div className="agent-report-head">
+            <strong>{report.summary}</strong>
+            <span>
+              {t.confidence}: {Math.round(report.confidence * 100)}%
+            </span>
+            <span>
+              {t.llmSource}:{" "}
+              {report.metadata?.llm?.enabled && !report.metadata.llm.fallback
+                ? `${report.metadata.llm.provider ?? "llm"} · ${report.metadata.llm.model ?? ""}`
+                : report.metadata?.llm?.fallback
+                  ? t.modelFallback
+                  : t.deterministicSource}
+            </span>
+          </div>
+          <div className="agent-report-metrics">
+            <span>{t.evidenceUsed}: {report.evidence_card_ids.length}</span>
+            <span>{t.entitiesUsed}: {report.affected_entities.length}</span>
+            <span>{t.relationsUsed}: {report.graph_paths?.reduce((count, path) => count + path.relations.length, 0) ?? 0}</span>
+          </div>
+          {citedEvidence.length ? (
+            <div className="agent-report-evidence">
+              {citedEvidence.slice(0, 4).map((card) => (
+                <article key={card.id}>
+                  <span>{evidenceSourceType(card, locale)} · {evidenceLineRange(card, locale)}</span>
+                  <strong>{evidenceTitle(card, locale)}</strong>
+                  <code>{card.sourcePath}</code>
+                </article>
+              ))}
+            </div>
+          ) : null}
+          {report.risks.length ? (
+            <p>
+              {t.risks}: {report.risks.slice(0, 3).join(" · ")}
+            </p>
+          ) : null}
           {report.next_actions.length ? (
             <p>
               {t.nextActions}: {report.next_actions.slice(0, 2).join(" · ")}
@@ -1164,8 +1453,10 @@ const missionStatusLabel = (status: string, locale: Locale) => {
     zh: {
       completed: "已完成",
       complete: "已完成",
+      cancelled: "已取消",
       failed: "失败",
       paused: "已暂停",
+      partial: "部分完成",
       pending: "等待",
       running: "运行中",
       stopped: "已停止",
@@ -1173,8 +1464,10 @@ const missionStatusLabel = (status: string, locale: Locale) => {
     en: {
       completed: "Completed",
       complete: "Completed",
+      cancelled: "Cancelled",
       failed: "Failed",
       paused: "Paused",
+      partial: "Partial",
       pending: "Pending",
       running: "Running",
       stopped: "Stopped",
@@ -1183,8 +1476,8 @@ const missionStatusLabel = (status: string, locale: Locale) => {
   return labels[locale][status] ?? status;
 };
 
-const isMissionTerminal = (mission: AutonomousMission | null) =>
-  Boolean(mission && ["completed", "complete", "failed", "stopped"].includes(mission.status));
+const isMissionTerminal = (mission: { status: string } | null) =>
+  Boolean(mission && ["completed", "complete", "partial", "failed", "stopped", "cancelled"].includes(mission.status));
 
 const summarizeMissionItems = (items: Record<string, unknown>[], locale: Locale) => {
   if (!items.length) return locale === "zh" ? "无" : "None";
@@ -1217,6 +1510,12 @@ function GraphExplorerPage({
   const [isRightOpen, setIsRightOpen] = useState(true);
   const [isSummaryLoading, setIsSummaryLoading] = useState(false);
   const [isNeighborhoodLoading, setIsNeighborhoodLoading] = useState(false);
+  const [graphSearchQuery, setGraphSearchQuery] = useState("");
+  const [graphSearchResults, setGraphSearchResults] = useState<GraphSearchResult[]>([]);
+  const [isGraphSearchLoading, setIsGraphSearchLoading] = useState(false);
+  const graphSearchAnchorRef = useRef<HTMLLabelElement | null>(null);
+  const [graphSearchMenuStyle, setGraphSearchMenuStyle] = useState<CSSProperties | undefined>();
+  const [graphSearchError, setGraphSearchError] = useState("");
   const [summaryError, setSummaryError] = useState("");
   const [neighborhoodError, setNeighborhoodError] = useState("");
 
@@ -1224,6 +1523,9 @@ function GraphExplorerPage({
     setSelectedHallId(archiveDraft.halls[0]?.id ?? null);
     setFocusedEntityId(null);
     setSelectedRelationId(null);
+    setGraphSearchQuery("");
+    setGraphSearchResults([]);
+    setGraphSearchError("");
   }, [archiveDraft.projectId, archiveDraft.halls]);
 
   useEffect(() => {
@@ -1250,6 +1552,40 @@ function GraphExplorerPage({
       isMounted = false;
     };
   }, [archiveDraft.projectId]);
+
+  useEffect(() => {
+    const normalizedQuery = graphSearchQuery.trim();
+    if (normalizedQuery.length < 2) {
+      setGraphSearchResults([]);
+      setGraphSearchError("");
+      setIsGraphSearchLoading(false);
+      return;
+    }
+
+    let isMounted = true;
+    setIsGraphSearchLoading(true);
+    const timerId = window.setTimeout(() => {
+      searchGraphEntities(archiveDraft.projectId, normalizedQuery, 12)
+        .then((results) => {
+          if (!isMounted) return;
+          setGraphSearchResults(results);
+          setGraphSearchError("");
+        })
+        .catch((nextError) => {
+          if (!isMounted) return;
+          setGraphSearchResults([]);
+          setGraphSearchError(nextError instanceof Error ? nextError.message : String(nextError));
+        })
+        .finally(() => {
+          if (isMounted) setIsGraphSearchLoading(false);
+        });
+    }, 220);
+
+    return () => {
+      isMounted = false;
+      window.clearTimeout(timerId);
+    };
+  }, [archiveDraft.projectId, graphSearchQuery]);
 
   useEffect(() => {
     let isMounted = true;
@@ -1290,6 +1626,10 @@ function GraphExplorerPage({
     () => new Map(neighborhood?.nodes.map((node) => [node.id, node]) ?? []),
     [neighborhood],
   );
+  const graphSearchMatchedEntityIds = useMemo(
+    () => new Set(graphSearchResults.map((result) => result.entity_id)),
+    [graphSearchResults],
+  );
   const visibleNodeCount = neighborhood?.nodes.length ?? 0;
   const visibleRelationCount = neighborhood?.relations.length ?? 0;
   const visibleError = neighborhoodError || summaryError;
@@ -1298,6 +1638,52 @@ function GraphExplorerPage({
     : locale === "zh"
       ? `显示 ${formatNumber(visibleNodeCount)} 个节点 / ${formatNumber(visibleRelationCount)} 条关系`
       : `Showing ${formatNumber(visibleNodeCount)} nodes / ${formatNumber(visibleRelationCount)} relations`;
+  const selectGraphSearchResult = (result: GraphSearchResult) => {
+    if (result.hall_ids.length && !result.hall_ids.includes(selectedHallId ?? "")) {
+      setSelectedHallId(result.hall_ids[0]);
+    } else if (!result.hall_ids.length) {
+      setSelectedHallId(null);
+    }
+    setFocusedEntityId(result.entity_id);
+    setSelectedRelationId(null);
+    setIsRightOpen(true);
+  };
+  const handleGraphSearchKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    if (graphSearchResults[0]) selectGraphSearchResult(graphSearchResults[0]);
+  };
+  const updateGraphSearchMenuPosition = () => {
+    const rect = graphSearchAnchorRef.current?.getBoundingClientRect();
+    if (!rect) {
+      setGraphSearchMenuStyle(undefined);
+      return;
+    }
+    const width = Math.min(420, Math.max(320, rect.width));
+    const viewportPadding = 12;
+    setGraphSearchMenuStyle({
+      top: rect.bottom + 8,
+      left: Math.min(
+        Math.max(viewportPadding, rect.right - width),
+        window.innerWidth - width - viewportPadding,
+      ),
+      width,
+    });
+  };
+
+  useEffect(() => {
+    if (graphSearchQuery.trim().length < 2) {
+      setGraphSearchMenuStyle(undefined);
+      return;
+    }
+    updateGraphSearchMenuPosition();
+    window.addEventListener("resize", updateGraphSearchMenuPosition);
+    window.addEventListener("scroll", updateGraphSearchMenuPosition, true);
+    return () => {
+      window.removeEventListener("resize", updateGraphSearchMenuPosition);
+      window.removeEventListener("scroll", updateGraphSearchMenuPosition, true);
+    };
+  }, [graphSearchQuery]);
 
   return (
     <section className="graph-explorer-page">
@@ -1318,6 +1704,7 @@ function GraphExplorerPage({
                 setSelectedRelationId(null);
               }}
             >
+              <option value="">{String(t.allGraph)}</option>
               {archiveDraft.halls.map((hall) => (
                 <option key={hall.id} value={hall.id}>
                   {hallTitle(hall, locale)}
@@ -1326,6 +1713,62 @@ function GraphExplorerPage({
             </select>
             <ChevronDown size={15} />
           </label>
+          <div className="graph-search-popover">
+            <label className="graph-toolbar-search" ref={graphSearchAnchorRef}>
+              <Search size={15} />
+              <input
+                aria-label={String(t.searchEntities)}
+                value={graphSearchQuery}
+                placeholder={String(t.graphSearchPlaceholder)}
+                onChange={(event) => setGraphSearchQuery(event.currentTarget.value)}
+                onKeyDown={handleGraphSearchKeyDown}
+              />
+              {graphSearchQuery ? (
+                <button
+                  className="icon-button subtle"
+                  onClick={() => {
+                    setGraphSearchQuery("");
+                    setGraphSearchResults([]);
+                    setGraphSearchError("");
+                  }}
+                  type="button"
+                  title={locale === "zh" ? "清空搜索" : "Clear search"}
+                >
+                  <X size={14} />
+                </button>
+              ) : null}
+            </label>
+            {graphSearchQuery.trim().length >= 2 ? (
+              <div className="graph-search-menu" style={graphSearchMenuStyle}>
+                <div className={`graph-search-state ${graphSearchError ? "is-error" : ""}`}>
+                  {graphSearchError
+                    ? graphSearchError
+                    : isGraphSearchLoading
+                      ? locale === "zh" ? "搜索中..." : "Searching..."
+                      : graphSearchResults.length
+                        ? locale === "zh"
+                          ? `${formatNumber(graphSearchResults.length)} 个实体结果`
+                          : `${formatNumber(graphSearchResults.length)} entity results`
+                        : String(t.graphSearchEmpty)}
+                </div>
+                {graphSearchResults.map((result) => (
+                  <button
+                    className={result.entity_id === focusedEntityId ? "is-active" : ""}
+                    key={result.entity_id}
+                    onClick={() => selectGraphSearchResult(result)}
+                    type="button"
+                  >
+                    <span>{typeLabel(result.type, locale)} · {result.degree}</span>
+                    <strong>{result.label}</strong>
+                    <code>{result.source_path ?? result.entity_id}</code>
+                  </button>
+                ))}
+                {!graphSearchResults.length && !isGraphSearchLoading && !graphSearchError ? (
+                  <p>{String(t.graphSearchHint)}</p>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
           <button
             aria-pressed={depth === 2}
             className="secondary-action"
@@ -1377,6 +1820,7 @@ function GraphExplorerPage({
             focusedEntityId={focusedEntityId}
             isLoading={isSummaryLoading}
             locale={locale}
+            onClose={() => setIsLeftOpen(false)}
             onStartSelect={(entityId) => {
               setFocusedEntityId(entityId);
               setSelectedRelationId(null);
@@ -1401,6 +1845,7 @@ function GraphExplorerPage({
             setSelectedRelationId(relationId);
             setIsRightOpen(true);
           }}
+          searchMatchedEntityIds={graphSearchMatchedEntityIds}
           selectedRelationId={selectedRelationId}
         />
         {isRightOpen ? (
@@ -1408,6 +1853,7 @@ function GraphExplorerPage({
             focusedNode={focusedNode}
             locale={locale}
             nodeById={nodeById}
+            onClose={() => setIsRightOpen(false)}
             selectedRelation={selectedRelation}
           />
         ) : null}
@@ -1423,6 +1869,7 @@ function GraphStartsDrawer({
   focusedEntityId,
   isLoading,
   locale,
+  onClose,
   onStartSelect,
   selectedHallId,
   summary,
@@ -1430,6 +1877,7 @@ function GraphStartsDrawer({
   focusedEntityId: string | null;
   isLoading: boolean;
   locale: Locale;
+  onClose: () => void;
   onStartSelect: (entityId: string) => void;
   selectedHallId: string | null;
   summary: GraphSummary | null;
@@ -1456,7 +1904,9 @@ function GraphStartsDrawer({
           <span className="eyebrow">{t.graphExplorer}</span>
           <h2>{t.recommendedStarts}</h2>
         </div>
-        <PanelLeft size={18} />
+        <button className="icon-button drawer-close-button" onClick={onClose} type="button" title={String(t.closeDrawer)}>
+          <PanelLeft size={18} />
+        </button>
       </div>
       <div className="graph-start-list">
         {starts.length ? (
@@ -1470,7 +1920,9 @@ function GraphStartsDrawer({
               <span className="graph-start-group">{start.group}</span>
               <strong>{start.label}</strong>
               <span>{start.reason}</span>
-              <small>{Math.round(start.score * 100)}%</small>
+              <small>
+                {formatNumber(Math.round(start.score))} {String(t.graphStartScore)}
+              </small>
             </button>
           ))
         ) : (
@@ -1485,11 +1937,13 @@ function GraphEntityDrawer({
   focusedNode,
   locale,
   nodeById,
+  onClose,
   selectedRelation,
 }: {
   focusedNode: GraphExplorerNode | null;
   locale: Locale;
   nodeById: Map<string, GraphExplorerNode>;
+  onClose: () => void;
   selectedRelation: GraphExplorerRelation | null;
 }) {
   const t = copy[locale];
@@ -1506,7 +1960,9 @@ function GraphEntityDrawer({
           <span className="eyebrow">{t.graphExplorer}</span>
           <h2>{t.entityDetails}</h2>
         </div>
-        <PanelRight size={18} />
+        <button className="icon-button drawer-close-button" onClick={onClose} type="button" title={String(t.closeDrawer)}>
+          <PanelRight size={18} />
+        </button>
       </div>
       <div className="entity-detail-stack">
         {focusedNode ? (
@@ -1569,6 +2025,7 @@ function GraphExplorerCanvas({
   neighborhood,
   onNodeFocus,
   onRelationSelect,
+  searchMatchedEntityIds,
   selectedRelationId,
 }: {
   focusedEntityId: string | null;
@@ -1578,6 +2035,7 @@ function GraphExplorerCanvas({
   neighborhood: GraphNeighborhood | null;
   onNodeFocus: (entityId: string) => void;
   onRelationSelect: (relationId: string) => void;
+  searchMatchedEntityIds: Set<string>;
   selectedRelationId: string | null;
 }) {
   const layout = useMemo(
@@ -1691,12 +2149,13 @@ function GraphExplorerCanvas({
         {layout.nodes.map((node) => {
           const isExplored = missionOverlay?.explored_node_ids.includes(node.id) ?? false;
           const isRisk = missionOverlay?.risk_node_ids.includes(node.id) ?? false;
+          const isSearchMatch = searchMatchedEntityIds.has(node.id);
           return (
             <g
               aria-label={node.label}
               className={`explorer-node ${node.tone} ${node.isFocused ? "is-focused" : ""} ${
                 node.isDimmed ? "is-dimmed" : ""
-              } ${isExplored ? "is-agent-explored" : ""} ${isRisk ? "is-agent-risk" : ""}`}
+              } ${isSearchMatch ? "is-search-match" : ""} ${isExplored ? "is-agent-explored" : ""} ${isRisk ? "is-agent-risk" : ""}`}
               key={node.id}
               onClick={() => onNodeFocus(node.id)}
               onKeyDown={(event) => handleNodeKeyDown(event, node.id)}
@@ -1902,10 +2361,12 @@ const agentDisplayStatus = (result: ProjectAgentReport["agents"][string] | undef
 
 function ModelStatusPanel({
   agentStatus,
+  hybridRagStatus,
   locale,
   report,
 }: {
   agentStatus: AgentStatus | null;
+  hybridRagStatus: HybridRagStatus | null;
   locale: Locale;
   report: ProjectAgentReport | null;
 }) {
@@ -1927,6 +2388,20 @@ function ModelStatusPanel({
         <strong>{report ? statusLabel(report.status, locale) : t.pending}</strong>
         <span>{t.scope}</span>
         <strong>{report?.scan_profile ?? "architecture"}</strong>
+        <span>{t.hybridRag}</span>
+        <strong>
+          {hybridRagStatus
+            ? `${formatNumber(hybridRagStatus.indexed_chunks)} chunks · ${hybridRagStatus.dense_provider}`
+            : t.pending}
+        </strong>
+        <span>{t.multimodal}</span>
+        <strong>
+          {hybridRagStatus
+            ? `${formatNumber(hybridRagStatus.image_chunks)} image chunks · ${
+                hybridRagStatus.vision_enabled ? hybridRagStatus.vision_provider : t.fallback
+              }`
+            : t.pending}
+        </strong>
       </div>
     </section>
   );
@@ -1953,6 +2428,7 @@ function AgentWorkProofPanel({
         {agentRoleOrder.map((role) => {
           const result = report?.agents[role];
           const llm = result?.metadata?.llm;
+          const agentSdk = result?.metadata?.agent_sdk;
           const llmError = typeof llm === "object" && llm && "error" in llm ? String((llm as Record<string, unknown>).error) : "";
           return (
             <article className="agent-proof-card" key={role}>
@@ -1971,7 +2447,19 @@ function AgentWorkProofPanel({
                 <span>{t.entitiesUsed}: {result?.entity_ids.length ?? 0}</span>
                 <span>{t.relationsUsed}: {result?.relation_ids.length ?? 0}</span>
                 <span>{t.confidence}: {Math.round((result?.confidence ?? 0) * 100)}%</span>
+                {agentSdk?.tools?.length ? <span>{t.toolsUsed}: {agentSdk.tools.length}</span> : null}
+                {agentSdk?.validation?.status ? <span>{t.validation}: {agentSdk.validation.status}</span> : null}
               </div>
+              {agentSdk?.work_log?.length ? (
+                <div className="proof-block">
+                  <strong>{t.workLog}</strong>
+                  <ul>
+                    {agentSdk.work_log.slice(0, 3).map((item, index) => (
+                      <li key={`${role}-work-${index}`}>{String(item.detail ?? item.step ?? "")}</li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
               {result?.findings.length ? (
                 <div className="proof-block">
                   <strong>{t.findings}</strong>
@@ -2027,6 +2515,158 @@ function TaskHistoryPanel({
         </div>
       ) : (
         <p className="empty-note">{t.noTaskHistory}</p>
+      )}
+    </section>
+  );
+}
+
+function ReactAgentMissionPanel({
+  error,
+  isStarting,
+  locale,
+  mission,
+  onAction,
+  onStart,
+  trace,
+}: {
+  error: string;
+  isStarting: boolean;
+  locale: Locale;
+  mission: AgentMission | null;
+  onAction: (action: "pause" | "resume" | "stop") => void;
+  onStart: () => void;
+  trace: AgentTraceEvent[];
+}) {
+  const t = copy[locale];
+  const completedCount = mission?.tasks.filter((task) => ["completed", "complete"].includes(task.status)).length ?? 0;
+  const terminal = isMissionTerminal(mission);
+  const canStop = Boolean(mission && !terminal && !isStarting);
+  const statusText = mission
+    ? missionStatusLabel(mission.status, locale)
+    : locale === "zh"
+      ? "未启动"
+      : "Not started";
+  const traceEvents = trace.length ? trace : mission?.trace_events ?? [];
+  const verifierStatus = mission?.verifier_result?.status
+    ? missionStatusLabel(mission.verifier_result.status, locale)
+    : locale === "zh"
+      ? "未校验"
+      : "Not verified";
+
+  return (
+    <section className="react-agent-panel panel" aria-label={locale === "zh" ? "ReAct Agent 任务" : "ReAct Agent mission"}>
+      <div className="mission-control-head">
+        <div>
+          <span className="eyebrow">{locale === "zh" ? "Graph-grounded ReAct" : "Graph-grounded ReAct"}</span>
+          <h2>{locale === "zh" ? "Agent 任务追踪" : "Agent mission trace"}</h2>
+        </div>
+        <div className="mission-actions">
+          <span className={`pipeline-status ${mission?.status ?? "pending"}`}>{statusText}</span>
+          <button className="primary-button compact" disabled={isStarting} onClick={onStart} type="button">
+            <Sparkles size={14} />
+            {isStarting ? t.missionStarting : locale === "zh" ? "启动 ReAct" : "Start ReAct"}
+          </button>
+          <button className="secondary-action compact danger" disabled={!canStop} onClick={() => onAction("stop")} type="button">
+            <X size={14} />
+            {t.stopMission}
+          </button>
+        </div>
+      </div>
+      {error ? (
+        <div className="mission-error" role="alert">
+          <strong>{t.missionError}</strong>
+          <span>{error}</span>
+        </div>
+      ) : null}
+      {mission ? (
+        <>
+          <div className="mission-meta-grid react-plan-grid">
+            <span>{t.missionId}</span>
+            <strong>{mission.id}</strong>
+            <span>{t.missionGoal}</span>
+            <strong>{mission.goal}</strong>
+            <span>{locale === "zh" ? "任务预算" : "Task budget"}</span>
+            <strong>{completedCount} / {mission.budget.max_tasks}</strong>
+            <span>{t.maxSteps}</span>
+            <strong>{mission.budget.max_steps_per_task}</strong>
+            <span>{t.toolsUsed}</span>
+            <strong>{mission.budget.max_tool_calls}</strong>
+            <span>{t.validation}</span>
+            <strong>{verifierStatus}</strong>
+          </div>
+          <div className="mission-task-list">
+            {mission.tasks.length ? (
+              mission.tasks.map((task) => (
+                <article className={`mission-task ${task.status}`} key={task.id}>
+                  <div className="mission-task-head">
+                    <div>
+                      <span className="eyebrow">{task.task_type}</span>
+                      <h3>{task.objective}</h3>
+                    </div>
+                    <span className={`pipeline-status ${task.status}`}>{missionStatusLabel(task.status, locale)}</span>
+                  </div>
+                  <div className="mission-task-metrics">
+                    <span>{locale === "zh" ? "步骤" : "Steps"}: {task.steps_used} / {task.max_steps}</span>
+                    <span>{t.toolsUsed}: {task.allowed_tools.length}</span>
+                    <span>{t.evidenceUsed}: {task.evidence_ids.length}</span>
+                    <span>{t.entitiesUsed}: {task.output_entity_ids.length || task.input_entity_ids.length}</span>
+                    <span>{t.confidence}: {Math.round(task.confidence * 100)}%</span>
+                  </div>
+                  <div className="mission-task-notes">
+                    <p><strong>{t.findings}</strong> {summarizeMissionItems(task.findings, locale)}</p>
+                    <p><strong>{t.risks}</strong> {summarizeMissionItems(task.risks, locale)}</p>
+                  </div>
+                </article>
+              ))
+            ) : (
+              <p className="empty-note">{locale === "zh" ? "任务已创建，尚无计划记录。" : "Mission created, but no task plan records yet."}</p>
+            )}
+          </div>
+          <div className="mission-timeline-head">
+            <strong>{locale === "zh" ? "工具时间线" : "Tool timeline"}</strong>
+            <span>{traceEvents.length} {locale === "zh" ? "条事件" : "events"}</span>
+          </div>
+          <div className="react-trace-list">
+            {traceEvents.length ? (
+              traceEvents.map((event) => (
+                <article className={`react-trace-event ${event.event_type}`} key={event.id}>
+                  <div>
+                    <span className="eyebrow">#{event.sequence} · {event.event_type}</span>
+                    <strong>{event.tool_name || (locale === "zh" ? "无工具调用" : "No tool call")}</strong>
+                  </div>
+                  <p>{event.observation_summary || (locale === "zh" ? "无观察摘要" : "No observation summary")}</p>
+                  <div className="mission-task-metrics">
+                    <span>{t.evidenceUsed}: {event.evidence_ids.length}</span>
+                    <span>{t.entitiesUsed}: {event.entity_ids.length}</span>
+                    <span>{t.relationsUsed}: {event.relation_ids.length}</span>
+                    {event.error ? <span>{locale === "zh" ? "错误" : "Error"}: {event.error}</span> : null}
+                  </div>
+                </article>
+              ))
+            ) : (
+              <p className="empty-note">{locale === "zh" ? "暂无工具事件。" : "No tool events yet."}</p>
+            )}
+          </div>
+          {mission.final_report ? (
+            <div className="react-final-report">
+              <div>
+                <span className="eyebrow">{locale === "zh" ? "最终报告" : "Final report"}</span>
+                <strong>{t.confidence}: {Math.round(mission.final_report.confidence * 100)}%</strong>
+              </div>
+              <p>{mission.final_report.summary}</p>
+              <div className="mission-task-metrics">
+                <span>{t.findings}: {mission.final_report.findings.length}</span>
+                <span>{t.evidenceUsed}: {mission.final_report.evidence_ids.length}</span>
+              </div>
+            </div>
+          ) : null}
+        </>
+      ) : (
+        <p className="empty-note mission-empty">
+          {locale === "zh"
+            ? "还没有 ReAct Agent 任务。启动后会显示任务卡、工具调用摘要和最终报告。"
+            : "No ReAct Agent mission yet. Start one to see task cards, tool-call summaries, and the final report."}
+        </p>
       )}
     </section>
   );
@@ -2159,18 +2799,23 @@ function MissionTaskCard({ locale, task }: { locale: Locale; task: MissionTask }
 
 export function App() {
   const [agentStatus, setAgentStatus] = useState<AgentStatus | null>(null);
-  const [archiveDraft, setArchiveDraft] = useState<ArchiveDraft>(fallbackArchiveDraft);
+  const [archiveDraft, setArchiveDraft] = useState<ArchiveDraft | null>(null);
   const [agentReport, setAgentReport] = useState<ProjectAgentReport | null>(null);
+  const [hybridRagStatus, setHybridRagStatus] = useState<HybridRagStatus | null>(null);
   const [mission, setMission] = useState<AutonomousMission | null>(null);
+  const [reactMission, setReactMission] = useState<AgentMission | null>(null);
+  const [reactTrace, setReactTrace] = useState<AgentTraceEvent[]>([]);
+  const [reactMissionError, setReactMissionError] = useState("");
+  const [isStartingReactMission, setIsStartingReactMission] = useState(false);
   const [missionOverlay, setMissionOverlay] = useState<MissionGraphOverlay | null>(null);
   const [missionError, setMissionError] = useState("");
   const [missionAction, setMissionAction] = useState<MissionAction>(null);
-  const [archiveIds, setArchiveIds] = useState<string[]>([fallbackArchiveDraft.projectId]);
-  const [isFallbackArchive, setIsFallbackArchive] = useState(true);
+  const [archiveIds, setArchiveIds] = useState<string[]>([]);
+  const [isFallbackArchive, setIsFallbackArchive] = useState(false);
   const [isLoadingArchive, setIsLoadingArchive] = useState(true);
   const [isSwitchingArchive, setIsSwitchingArchive] = useState(false);
-  const [selectedHallId, setSelectedHallId] = useState(fallbackArchiveDraft.halls[0].id);
-  const [selectedArchiveId, setSelectedArchiveId] = useState(fallbackArchiveDraft.projectId);
+  const [selectedHallId, setSelectedHallId] = useState("");
+  const [selectedArchiveId, setSelectedArchiveId] = useState("");
   const [locale, setLocale] = useState<Locale>("zh");
   const [activePage, setActivePage] = useState<AppPage>("overview");
   const [queryMode] = useState<ScopeMode>("architecture_tour");
@@ -2183,21 +2828,21 @@ export function App() {
   const [uploadProgressMessage, setUploadProgressMessage] = useState("");
   const [agentJobProgress, setAgentJobProgress] = useState(0);
   const [agentJobMessage, setAgentJobMessage] = useState("");
-  const [jobHistory, setJobHistory] = useState<JobHistoryItem[]>([]);
+  const [jobHistoryByProjectId, setJobHistoryByProjectId] = useState<JobHistoryByProjectId>({});
   const [searchQuery, setSearchQuery] = useState("");
   const [isSearchVisible, setIsSearchVisible] = useState(false);
   const [isGraphHintVisible, setIsGraphHintVisible] = useState(false);
   const [selectedRelationId, setSelectedRelationId] = useState("");
   const [selectedEvidenceId, setSelectedEvidenceId] = useState("");
   const [notice, setNotice] = useState("");
-  const activeProjectIdRef = useRef(archiveDraft.projectId);
+  const activeProjectIdRef = useRef("");
   const activeMissionIdRef = useRef<string | null>(null);
   const missionActionRef = useRef<MissionAction>(null);
   const missionActionTokenRef = useRef(0);
 
   useEffect(() => {
-    activeProjectIdRef.current = archiveDraft.projectId;
-  }, [archiveDraft.projectId]);
+    activeProjectIdRef.current = archiveDraft?.projectId ?? "";
+  }, [archiveDraft?.projectId]);
 
   useEffect(() => {
     activeMissionIdRef.current = mission?.id ?? null;
@@ -2206,21 +2851,19 @@ export function App() {
   useEffect(() => {
     let isMounted = true;
 
-    fetchArchiveDraft().then(({ archiveIds: nextArchiveIds, draft, source }) => {
+    fetchArchiveDraft().then(({ archiveIds: nextArchiveIds }) => {
       if (!isMounted) return;
-      setArchiveIds(nextArchiveIds.length ? nextArchiveIds : [draft.projectId]);
-      setArchiveDraft(draft);
-      setSelectedArchiveId(draft.projectId);
-      setSelectedHallId(draft.halls[0]?.id ?? fallbackArchiveDraft.halls[0].id);
-      setIsFallbackArchive(source === "fallback");
+      setArchiveIds(nextArchiveIds);
+      setArchiveDraft(null);
+      setSelectedArchiveId("");
+      setSelectedHallId("");
+      setIsFallbackArchive(false);
       setIsLoadingArchive(false);
-      fetchProjectAgentReport(draft.projectId)
-        .then((report) => {
-          if (isMounted) setAgentReport(report);
-        })
-        .catch(() => {
-          if (isMounted) setAgentReport(null);
-        });
+      setAgentReport(null);
+      setHybridRagStatus(null);
+      setReactMission(null);
+      setReactTrace([]);
+      setReactMissionError("");
     });
 
     return () => {
@@ -2252,25 +2895,48 @@ export function App() {
   }, []);
 
   const selectedHall = useMemo(
-    () => archiveDraft.halls.find((hall) => hall.id === selectedHallId) ?? archiveDraft.halls[0],
-    [archiveDraft.halls, selectedHallId],
+    () => archiveDraft?.halls.find((hall) => hall.id === selectedHallId) ?? archiveDraft?.halls[0] ?? null,
+    [archiveDraft?.halls, selectedHallId],
   );
+  const currentJobHistory = jobHistoryByProjectId[archiveDraft?.projectId ?? selectedArchiveId] ?? [];
 
   const notify = (message: string) => {
     setNotice(message);
     window.setTimeout(() => setNotice(""), 3200);
   };
 
-  const recordJobProgress = (label: string, progress: number, message: string) => {
-    setJobHistory((current) => [
-      ...current.slice(-20),
-      {
+  const recordJobProgress = (
+    label: string,
+    progress: number,
+    message: string,
+    projectId = activeProjectIdRef.current,
+  ) => {
+    setJobHistoryByProjectId((historyByProject) => {
+      const current = historyByProject[projectId] ?? [];
+      const last = current[current.length - 1];
+      const nextItem = {
         id: `${Date.now()}-${label}-${progress}`,
         label,
         progress,
         message,
-      },
-    ]);
+      };
+
+      if (last?.label === label && last.progress === progress && last.message === message) {
+        return historyByProject;
+      }
+
+      if (last?.label === label && last.progress < 100 && progress < 100) {
+        return {
+          ...historyByProject,
+          [projectId]: [...current.slice(0, -1), nextItem],
+        };
+      }
+
+      return {
+        ...historyByProject,
+        [projectId]: [...current.slice(-20), nextItem],
+      };
+    });
   };
 
   const resetArchiveView = (draft: ArchiveDraft, report: ProjectAgentReport | null = null) => {
@@ -2280,19 +2946,29 @@ export function App() {
     missionActionRef.current = null;
     setArchiveDraft(draft);
     setAgentReport(report);
+    fetchHybridRagStatus(draft.projectId)
+      .then(setHybridRagStatus)
+      .catch(() => setHybridRagStatus(null));
     setMission(null);
+    setReactMission(null);
+    setReactTrace([]);
+    setReactMissionError("");
     setMissionOverlay(null);
     setMissionError("");
     setMissionAction(null);
     setSelectedArchiveId(draft.projectId);
-    setSelectedHallId(draft.halls[0]?.id ?? fallbackArchiveDraft.halls[0].id);
+    setSelectedHallId(draft.halls[0]?.id ?? "");
     setSelectedRelationId("");
     setSelectedEvidenceId("");
     setSearchQuery("");
   };
 
   const handleArchiveChange = async (projectId: string) => {
-    if (!projectId || projectId === archiveDraft.projectId) return;
+    if (!projectId) {
+      resetArchiveSelection();
+      return;
+    }
+    if (projectId === archiveDraft?.projectId) return;
     setIsSwitchingArchive(true);
     try {
       const draft = await fetchProjectArchive(projectId);
@@ -2308,6 +2984,30 @@ export function App() {
     }
   };
 
+  const resetArchiveSelection = () => {
+    activeProjectIdRef.current = "";
+    activeMissionIdRef.current = null;
+    missionActionTokenRef.current += 1;
+    missionActionRef.current = null;
+    setArchiveDraft(null);
+    setAgentReport(null);
+    setHybridRagStatus(null);
+    setMission(null);
+    setReactMission(null);
+    setReactTrace([]);
+    setReactMissionError("");
+    setMissionOverlay(null);
+    setMissionError("");
+    setMissionAction(null);
+    setSelectedArchiveId("");
+    setSelectedHallId("");
+    setSelectedRelationId("");
+    setSelectedEvidenceId("");
+    setSearchQuery("");
+    setIsSearchVisible(false);
+    setIsFallbackArchive(false);
+  };
+
   const handleCreateArchive = async () => {
     document.getElementById("project-intake")?.scrollIntoView({ behavior: "smooth", block: "center" });
     if (!selectedFile) {
@@ -2320,16 +3020,21 @@ export function App() {
     setUploadProgressMessage(String(copy[locale].createPending));
     notify(String(copy[locale].createPending));
     try {
-      const { draft, agentReport } = await uploadProjectArchive(
+      const { draft } = await uploadProjectArchive(
         selectedFile,
         scanProfile,
-        (progress, message) => {
+        (progress, message, projectId) => {
           setUploadProgress(progress);
           setUploadProgressMessage(message);
-          recordJobProgress(String(copy[locale].createArchive), progress, message);
+          recordJobProgress(
+            String(copy[locale].createArchive),
+            progress,
+            message,
+            projectId ?? activeProjectIdRef.current,
+          );
         },
       );
-      resetArchiveView(draft, agentReport);
+      resetArchiveView(draft, null);
       setArchiveIds((currentIds) =>
         currentIds.includes(draft.projectId) ? currentIds : [...currentIds, draft.projectId].sort(),
       );
@@ -2350,23 +3055,42 @@ export function App() {
   };
 
   const handleSearchGraph = () => {
+    if (!archiveDraft) {
+      setActivePage("overview");
+      notify(String(copy[locale].noArchiveSelected));
+      return;
+    }
+    setActivePage("overview");
     setIsSearchVisible(true);
+    window.setTimeout(() => {
+      document.querySelector<HTMLInputElement>(".graph-search input")?.focus();
+    }, 0);
     notify(String(copy[locale].searchOpened));
   };
 
   const handleRunAgentReport = async () => {
+    if (!archiveDraft) {
+      notify(String(copy[locale].noArchiveSelected));
+      return;
+    }
+    const projectId = archiveDraft.projectId;
     setIsRunningAgentReport(true);
     setAgentJobProgress(1);
     setAgentJobMessage(String(copy[locale].agentReportRunning));
     notify(String(copy[locale].agentReportRunning));
     try {
       const report = await runProjectAgentReportJob(
-        archiveDraft.projectId,
+        projectId,
         scanProfile,
-        (progress, message) => {
+        (progress, message, projectId) => {
           setAgentJobProgress(progress);
           setAgentJobMessage(message);
-          recordJobProgress(String(copy[locale].rerunAnalysis), progress, message);
+          recordJobProgress(
+            String(copy[locale].rerunAnalysis),
+            progress,
+            message,
+            projectId ?? activeProjectIdRef.current,
+          );
         },
       );
       setAgentReport(report);
@@ -2380,6 +3104,43 @@ export function App() {
         setAgentJobProgress(0);
         setAgentJobMessage("");
       }, 1200);
+    }
+  };
+
+  const handleStartReactMission = async () => {
+    if (!archiveDraft || isStartingReactMission) return;
+    setIsStartingReactMission(true);
+    setReactMissionError("");
+    try {
+      const nextMission = await startAgentMission(archiveDraft.projectId, {
+        goal: "Understand project architecture with graph-grounded evidence",
+        max_tasks: 5,
+        max_steps_per_task: 4,
+      });
+      setReactMission(nextMission);
+      setReactTrace(nextMission.trace_events);
+      const latestTrace = await fetchAgentMissionTrace(nextMission.id);
+      setReactTrace(latestTrace);
+      notify(locale === "zh" ? "ReAct Agent 任务已完成" : "ReAct Agent mission complete");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setReactMissionError(message);
+      notify(`${copy[locale].missionError}: ${message}`);
+    } finally {
+      setIsStartingReactMission(false);
+    }
+  };
+
+  const handleReactMissionAction = async (action: "pause" | "resume" | "stop") => {
+    if (!reactMission) return;
+    setReactMissionError("");
+    try {
+      const updated = await updateAgentMissionStatus(reactMission.id, action);
+      setReactMission(updated);
+      setReactTrace(updated.trace_events);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setReactMissionError(message);
     }
   };
 
@@ -2407,6 +3168,10 @@ export function App() {
   };
 
   const handleStartMission = async () => {
+    if (!archiveDraft) {
+      notify(String(copy[locale].noArchiveSelected));
+      return;
+    }
     if (missionActionRef.current) return;
     const token = missionActionTokenRef.current + 1;
     missionActionTokenRef.current = token;
@@ -2437,7 +3202,7 @@ export function App() {
   };
 
   const handleMissionStatusChange = async (action: "pause" | "resume" | "stop") => {
-    if (missionActionRef.current || !mission) return;
+    if (missionActionRef.current || !mission || !archiveDraft) return;
     if (action === "pause" && (isMissionTerminal(mission) || mission.status === "paused")) return;
     if (action === "resume" && mission.status !== "paused") return;
     if (action === "stop" && isMissionTerminal(mission)) return;
@@ -2486,11 +3251,6 @@ export function App() {
       <PageTabs activePage={activePage} locale={locale} onPageChange={setActivePage} />
       {activePage === "overview" ? (
         <>
-          <ProjectPassport
-            archiveDraft={archiveDraft}
-            isFallback={isFallbackArchive}
-            locale={locale}
-          />
           <UploadDock
             isCreatingArchive={isCreatingArchive}
             locale={locale}
@@ -2508,47 +3268,69 @@ export function App() {
             uploadProgress={uploadProgress}
             uploadProgressMessage={uploadProgressMessage}
           />
-          <div className="workbench">
-            <HallRail
-              archiveDraft={archiveDraft}
-              locale={locale}
-              selectedHallId={selectedHallId}
-              onSelect={(hall) => {
-                setSelectedHallId(hall.id);
-                setSelectedRelationId("");
-                setSelectedEvidenceId("");
-              }}
-            />
-            <StarMap
-              hall={selectedHall}
-              isGraphHintVisible={isGraphHintVisible}
-              locale={locale}
-              onExpandGraph={() => setActivePage("graph")}
-              onGraphHintClose={() => setIsGraphHintVisible(false)}
-              onGraphHintShow={() => setIsGraphHintVisible(true)}
-              onRelationSelect={(relation) => {
-                setSelectedRelationId(relation.id);
-                notify(`${copy[locale].relationSelected}: ${relation.type}`);
-              }}
-              onSearchChange={setSearchQuery}
-              relations={archiveDraft.relations}
-              searchQuery={searchQuery}
-              searchVisible={isSearchVisible}
-              selectedRelationId={selectedRelationId}
-            />
-            <EvidenceDrawer
-              cards={archiveDraft.evidenceCards}
-              hall={selectedHall}
-              locale={locale}
-              onEvidenceSelect={(card) => {
-                setSelectedEvidenceId(card.id);
-                notify(`${copy[locale].evidenceSelected}: ${evidenceTitle(card, locale)}`);
-              }}
-              selectedEvidenceId={selectedEvidenceId}
-            />
-          </div>
+          {archiveDraft && selectedHall ? (
+            <>
+              <ProjectPassport
+                archiveDraft={archiveDraft}
+                isFallback={isFallbackArchive}
+                locale={locale}
+              />
+              <div className="workbench">
+                <HallRail
+                  archiveDraft={archiveDraft}
+                  locale={locale}
+                  selectedHallId={selectedHallId}
+                  onSelect={(hall) => {
+                    setSelectedHallId(hall.id);
+                    setSelectedRelationId("");
+                    setSelectedEvidenceId("");
+                    setSearchQuery("");
+                    setIsSearchVisible(false);
+                  }}
+                />
+                <StarMap
+                  evidenceCards={archiveDraft.evidenceCards}
+                  hall={selectedHall}
+                  isGraphHintVisible={isGraphHintVisible}
+                  locale={locale}
+                  onExpandGraph={() => setActivePage("graph")}
+                  onEvidenceSelect={(card) => {
+                    setSelectedEvidenceId(card.id);
+                    notify(`${copy[locale].evidenceSelected}: ${evidenceTitle(card, locale)}`);
+                  }}
+                  onGraphHintClose={() => setIsGraphHintVisible(false)}
+                  onGraphHintShow={() => setIsGraphHintVisible(true)}
+                  onRelationClear={() => {
+                    setSelectedRelationId("");
+                    notify(locale === "zh" ? "已返回关系列表" : "Returned to relation list");
+                  }}
+                  onRelationSelect={(relation) => {
+                    setSelectedRelationId(relation.id);
+                    notify(`${copy[locale].relationSelected}: ${relation.type}`);
+                  }}
+                  onSearchChange={setSearchQuery}
+                  relations={archiveDraft.relations}
+                  searchQuery={searchQuery}
+                  searchVisible={isSearchVisible}
+                  selectedRelationId={selectedRelationId}
+                />
+                <EvidenceDrawer
+                  cards={archiveDraft.evidenceCards}
+                  hall={selectedHall}
+                  locale={locale}
+                  onEvidenceSelect={(card) => {
+                    setSelectedEvidenceId(card.id);
+                    notify(`${copy[locale].evidenceSelected}: ${evidenceTitle(card, locale)}`);
+                  }}
+                  selectedEvidenceId={selectedEvidenceId}
+                />
+              </div>
+            </>
+          ) : (
+            <EmptyArchiveState archiveCount={archiveIds.length} locale={locale} />
+          )}
         </>
-      ) : activePage === "graph" ? (
+      ) : activePage === "graph" && archiveDraft ? (
         <GraphExplorerPage
           archiveDraft={archiveDraft}
           locale={locale}
@@ -2559,9 +3341,20 @@ export function App() {
           }
           onOpenMission={() => setActivePage("agents")}
         />
-      ) : (
+      ) : activePage === "graph" ? (
+        <EmptyArchiveState archiveCount={archiveIds.length} locale={locale} />
+      ) : archiveDraft && selectedHall ? (
         <div className="agent-analysis-page">
           <div className="agent-analysis-main">
+            <ReactAgentMissionPanel
+              error={reactMissionError}
+              isStarting={isStartingReactMission}
+              locale={locale}
+              mission={reactMission?.project_id === archiveDraft.projectId ? reactMission : null}
+              onAction={handleReactMissionAction}
+              onStart={handleStartReactMission}
+              trace={reactMission?.project_id === archiveDraft.projectId ? reactTrace : []}
+            />
             <MissionControlPanel
               error={missionError}
               locale={locale}
@@ -2582,6 +3375,7 @@ export function App() {
             />
             <AgentWorkProofPanel locale={locale} report={agentReport} />
             <AgentCommandBar
+              evidenceCards={archiveDraft.evidenceCards}
               hall={selectedHall}
               locale={locale}
               onNotify={notify}
@@ -2590,10 +3384,17 @@ export function App() {
             />
           </div>
           <aside className="agent-analysis-side">
-            <ModelStatusPanel agentStatus={agentStatus} locale={locale} report={agentReport} />
-            <TaskHistoryPanel history={jobHistory} locale={locale} />
+            <ModelStatusPanel
+              agentStatus={agentStatus}
+              hybridRagStatus={hybridRagStatus}
+              locale={locale}
+              report={agentReport}
+            />
+            <TaskHistoryPanel history={currentJobHistory} locale={locale} />
           </aside>
         </div>
+      ) : (
+        <EmptyArchiveState archiveCount={archiveIds.length} locale={locale} />
       )}
     </div>
   );
