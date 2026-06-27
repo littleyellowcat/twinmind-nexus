@@ -3199,6 +3199,14 @@ export function App() {
         ]);
         if (!isCurrentReactRequest()) return;
         latestMission = polledMission;
+        const currentMission = reactMissionRef.current;
+        if (
+          currentMission?.id === polledMission.id &&
+          isMissionTerminal(currentMission) &&
+          !isMissionTerminal(polledMission)
+        ) {
+          return;
+        }
         updateReactMissionState(polledMission);
         setReactTrace(latestTrace);
         setReactMissionError("");
@@ -3229,6 +3237,9 @@ export function App() {
     const projectId = reactMission.project_id;
     const missionId = reactMission.id;
     setReactMissionError("");
+    if (action === "stop") {
+      reactMissionRequestTokenRef.current += 1;
+    }
     try {
       const updated = await updateAgentMissionStatus(missionId, action);
       if (activeProjectIdRef.current !== projectId || reactMissionRef.current?.id !== missionId) return;
