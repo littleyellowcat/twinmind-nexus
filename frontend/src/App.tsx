@@ -1480,6 +1480,9 @@ const missionStatusLabel = (status: string, locale: Locale) => {
 const isMissionTerminal = (mission: { status: string } | null) =>
   Boolean(mission && ["completed", "complete", "partial", "failed", "stopped", "cancelled"].includes(mission.status));
 
+const REACT_MISSION_POLL_ATTEMPTS = 30;
+const REACT_MISSION_POLL_DELAY_MS = 1000;
+
 const wait = (delayMs: number) => new Promise<void>((resolve) => window.setTimeout(resolve, delayMs));
 
 const summarizeMissionItems = (items: Record<string, unknown>[], locale: Locale) => {
@@ -2543,12 +2546,18 @@ function ReactAgentMissionPanel({
   const t = copy[locale];
   const completedCount = mission?.tasks.filter((task) => ["completed", "complete"].includes(task.status)).length ?? 0;
   const terminal = isMissionTerminal(mission);
+  const canStart = !isStarting && (!mission || terminal);
   const canStop = Boolean(mission && !terminal && !isStarting);
   const statusText = mission
     ? missionStatusLabel(mission.status, locale)
     : locale === "zh"
       ? "未启动"
       : "Not started";
+  const errorLabel = mission && !terminal
+    ? locale === "zh"
+      ? "状态提示"
+      : "Status note"
+    : t.missionError;
   const traceEvents = trace.length ? trace : mission?.trace_events ?? [];
   const verifierStatus = mission?.verifier_result?.status
     ? missionStatusLabel(mission.verifier_result.status, locale)
@@ -2565,7 +2574,7 @@ function ReactAgentMissionPanel({
         </div>
         <div className="mission-actions">
           <span className={`pipeline-status ${mission?.status ?? "pending"}`}>{statusText}</span>
-          <button className="primary-button compact" disabled={isStarting} onClick={onStart} type="button">
+          <button className="primary-button compact" disabled={!canStart} onClick={onStart} type="button">
             <Sparkles size={14} />
             {isStarting ? t.missionStarting : locale === "zh" ? "启动 ReAct" : "Start ReAct"}
           </button>
@@ -2577,7 +2586,7 @@ function ReactAgentMissionPanel({
       </div>
       {error ? (
         <div className="mission-error" role="alert">
-          <strong>{t.missionError}</strong>
+          <strong>{errorLabel}</strong>
           <span>{error}</span>
         </div>
       ) : null}
@@ -2842,7 +2851,14 @@ export function App() {
   const activeMissionIdRef = useRef<string | null>(null);
   const missionActionRef = useRef<MissionAction>(null);
   const missionActionTokenRef = useRef(0);
+  const archiveRequestTokenRef = useRef(0);
   const reactMissionRequestTokenRef = useRef(0);
+  const reactMissionRef = useRef<AgentMission | null>(null);
+
+  const updateReactMissionState = (nextMission: AgentMission | null) => {
+    reactMissionRef.current = nextMission;
+    setReactMission(nextMission);
+  };
 
   useEffect(() => {
     activeProjectIdRef.current = archiveDraft?.projectId ?? "";
@@ -2854,9 +2870,10 @@ export function App() {
 
   useEffect(() => {
     let isMounted = true;
+    const token = archiveRequestTokenRef.current;
 
     fetchArchiveDraft().then(({ archiveIds: nextArchiveIds }) => {
-      if (!isMounted) return;
+      if (!isMounted || token !== archiveRequestTokenRef.current) return;
       setArchiveIds(nextArchiveIds);
       setArchiveDraft(null);
       setSelectedArchiveId("");
@@ -2866,7 +2883,7 @@ export function App() {
       setAgentReport(null);
       setHybridRagStatus(null);
       reactMissionRequestTokenRef.current += 1;
-      setReactMission(null);
+      updateReactMissionState(null);
       setReactTrace([]);
       setReactMissionError("");
       setIsStartingReactMission(false);
@@ -2945,7 +2962,12 @@ export function App() {
     });
   };
 
-  const resetArchiveView = (draft: ArchiveDraft, report: ProjectAgentReport | null = null) => {
+  const resetArchiveView = (
+    draft: ArchiveDraft,
+    report: ProjectAgentReport | null = null,
+    archiveToken = archiveRequestTokenRef.current,
+  ) => {
+    if (archiveToken !== archiveRequestTokenRef.current) return false;
     activeProjectIdRef.current = draft.projectId;
     activeMissionIdRef.current = null;
     missionActionTokenRef.current += 1;
@@ -2953,11 +2975,20 @@ export function App() {
     reactMissionRequestTokenRef.current += 1;
     setArchiveDraft(draft);
     setAgentReport(report);
+    setHybridRagStatus(null);
     fetchHybridRagStatus(draft.projectId)
-      .then(setHybridRagStatus)
-      .catch(() => setHybridRagStatus(null));
+      .then((status) => {
+        if (archiveToken === archiveRequestTokenRef.current && activeProjectIdRef.current === draft.projectId) {
+          setHybridRagStatus(status);
+        }
+      })
+      .catch(() => {
+        if (archiveToken === archiveRequestTokenRef.current && activeProjectIdRef.current === draft.projectId) {
+          setHybridRagStatus(null);
+        }
+      });
     setMission(null);
-    setReactMission(null);
+    updateReactMissionState(null);
     setReactTrace([]);
     setReactMissionError("");
     setIsStartingReactMission(false);
@@ -2969,6 +3000,7 @@ export function App() {
     setSelectedRelationId("");
     setSelectedEvidenceId("");
     setSearchQuery("");
+    return true;
   };
 
   const handleArchiveChange = async (projectId: string) => {
@@ -2977,22 +3009,28 @@ export function App() {
       return;
     }
     if (projectId === archiveDraft?.projectId) return;
+    const token = archiveRequestTokenRef.current + 1;
+    archiveRequestTokenRef.current = token;
     setIsSwitchingArchive(true);
     try {
       const draft = await fetchProjectArchive(projectId);
+      if (token !== archiveRequestTokenRef.current) return;
       const report = await fetchProjectAgentReport(projectId).catch(() => null);
-      resetArchiveView(draft, report);
+      if (token !== archiveRequestTokenRef.current) return;
+      if (!resetArchiveView(draft, report, token)) return;
       setIsFallbackArchive(false);
       notify(`${copy[locale].archiveSwitched}: ${draft.projectId}`);
     } catch (error) {
+      if (token !== archiveRequestTokenRef.current) return;
       const message = error instanceof Error ? error.message : String(copy[locale].archiveSwitchFailed);
       notify(`${copy[locale].archiveSwitchFailed}: ${message}`);
     } finally {
-      setIsSwitchingArchive(false);
+      if (token === archiveRequestTokenRef.current) setIsSwitchingArchive(false);
     }
   };
 
   const resetArchiveSelection = () => {
+    archiveRequestTokenRef.current += 1;
     activeProjectIdRef.current = "";
     activeMissionIdRef.current = null;
     missionActionTokenRef.current += 1;
@@ -3002,7 +3040,7 @@ export function App() {
     setAgentReport(null);
     setHybridRagStatus(null);
     setMission(null);
-    setReactMission(null);
+    updateReactMissionState(null);
     setReactTrace([]);
     setReactMissionError("");
     setIsStartingReactMission(false);
@@ -3016,6 +3054,7 @@ export function App() {
     setSearchQuery("");
     setIsSearchVisible(false);
     setIsFallbackArchive(false);
+    setIsSwitchingArchive(false);
   };
 
   const handleCreateArchive = async () => {
@@ -3025,6 +3064,8 @@ export function App() {
       return;
     }
 
+    const token = archiveRequestTokenRef.current + 1;
+    archiveRequestTokenRef.current = token;
     setIsCreatingArchive(true);
     setUploadProgress(2);
     setUploadProgressMessage(String(copy[locale].createPending));
@@ -3044,7 +3085,7 @@ export function App() {
           );
         },
       );
-      resetArchiveView(draft, null);
+      if (!resetArchiveView(draft, null, token)) return;
       setArchiveIds((currentIds) =>
         currentIds.includes(draft.projectId) ? currentIds : [...currentIds, draft.projectId].sort(),
       );
@@ -3053,6 +3094,7 @@ export function App() {
       setSelectedFileName("");
       notify(`${copy[locale].archiveCreated}: ${draft.projectId}`);
     } catch (error) {
+      if (token !== archiveRequestTokenRef.current) return;
       const message = error instanceof Error ? error.message : String(copy[locale].uploadFailed);
       notify(`${copy[locale].uploadFailed}: ${message}`);
     } finally {
@@ -3120,6 +3162,9 @@ export function App() {
   const handleStartReactMission = async () => {
     if (!archiveDraft || isStartingReactMission) return;
     const projectId = archiveDraft.projectId;
+    const currentVisibleMission =
+      reactMissionRef.current?.project_id === projectId ? reactMissionRef.current : null;
+    if (currentVisibleMission && !isMissionTerminal(currentVisibleMission)) return;
     const token = reactMissionRequestTokenRef.current + 1;
     reactMissionRequestTokenRef.current = token;
     const isCurrentReactRequest = () =>
@@ -3133,12 +3178,12 @@ export function App() {
         max_steps_per_task: 4,
       });
       if (!isCurrentReactRequest()) return;
-      setReactMission(nextMission);
+      updateReactMissionState(nextMission);
       setReactTrace(nextMission.trace_events);
 
       let latestMission = nextMission;
-      for (let attempt = 0; attempt < 10; attempt += 1) {
-        if (attempt > 0) await wait(500);
+      for (let attempt = 0; attempt < REACT_MISSION_POLL_ATTEMPTS; attempt += 1) {
+        if (attempt > 0) await wait(REACT_MISSION_POLL_DELAY_MS);
         if (!isCurrentReactRequest()) return;
         const [polledMission, latestTrace] = await Promise.all([
           fetchAgentMission(nextMission.id),
@@ -3146,20 +3191,26 @@ export function App() {
         ]);
         if (!isCurrentReactRequest()) return;
         latestMission = polledMission;
-        setReactMission(polledMission);
+        updateReactMissionState(polledMission);
         setReactTrace(latestTrace);
+        setReactMissionError("");
         if (isMissionTerminal(polledMission)) break;
       }
 
       if (!isCurrentReactRequest()) return;
       if (isMissionTerminal(latestMission)) {
         notify(locale === "zh" ? "ReAct Agent 任务已完成" : "ReAct Agent mission complete");
+      } else {
+        setReactMissionError(
+          locale === "zh"
+            ? "任务仍在运行；稍后刷新或停止。"
+            : "Mission is still running; refresh or stop later.",
+        );
       }
     } catch (error) {
       if (!isCurrentReactRequest()) return;
       const message = error instanceof Error ? error.message : String(error);
       setReactMissionError(message);
-      notify(`${copy[locale].missionError}: ${message}`);
     } finally {
       if (isCurrentReactRequest()) setIsStartingReactMission(false);
     }
@@ -3168,14 +3219,15 @@ export function App() {
   const handleReactMissionAction = async (action: "pause" | "resume" | "stop") => {
     if (!reactMission) return;
     const projectId = reactMission.project_id;
+    const missionId = reactMission.id;
     setReactMissionError("");
     try {
-      const updated = await updateAgentMissionStatus(reactMission.id, action);
-      if (activeProjectIdRef.current !== projectId) return;
-      setReactMission(updated);
+      const updated = await updateAgentMissionStatus(missionId, action);
+      if (activeProjectIdRef.current !== projectId || reactMissionRef.current?.id !== missionId) return;
+      updateReactMissionState(updated);
       setReactTrace(updated.trace_events);
     } catch (error) {
-      if (activeProjectIdRef.current !== projectId) return;
+      if (activeProjectIdRef.current !== projectId || reactMissionRef.current?.id !== missionId) return;
       const message = error instanceof Error ? error.message : String(error);
       setReactMissionError(message);
     }

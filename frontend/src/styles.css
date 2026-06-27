@@ -2299,7 +2299,9 @@ button {
 }
 
 .mission-error span {
+  min-width: 0;
   color: var(--muted);
+  overflow-wrap: anywhere;
 }
 
 .mission-meta-grid {
@@ -2388,6 +2390,7 @@ button {
 }
 
 .mission-task-metrics span {
+  min-width: 0;
   min-height: 23px;
   border: 1px solid rgba(59, 77, 99, 0.52);
   border-radius: 999px;
@@ -2395,6 +2398,7 @@ button {
   color: var(--muted);
   background: rgba(20, 34, 53, 0.42);
   font-size: 11px;
+  overflow-wrap: anywhere;
 }
 
 .mission-task-notes {
@@ -2423,6 +2427,7 @@ button {
   display: grid;
   gap: 12px;
   padding: 14px;
+  overflow-wrap: anywhere;
 }
 
 .react-plan-grid {
@@ -2469,6 +2474,7 @@ button {
   color: var(--muted);
   font-size: 12px;
   line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 
 .react-trace-event .mission-task-metrics {
@@ -2498,10 +2504,21 @@ button {
 }
 
 .react-final-report p {
+  min-width: 0;
   margin: 0;
   color: var(--muted);
   font-size: 12px;
   line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.react-agent-panel .mission-task h3,
+.react-agent-panel .mission-task-notes p,
+.react-plan-grid strong {
+  min-width: 0;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .agent-side-panel,
