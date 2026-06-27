@@ -8,6 +8,7 @@ from typing import Any
 from src.project_archive.types import AgentRoleResult, EvidenceCard, ProjectArchiveDraft
 
 MAX_GRAPH_SEARCH_LIMIT = 20
+MAX_NEIGHBORHOOD_DEPTH = 3
 MAX_NEIGHBORHOOD_NODES = 80
 MAX_NEIGHBORHOOD_RELATIONS = 120
 MAX_HYBRID_TOP_K = 12
@@ -134,6 +135,7 @@ class AgentToolRegistry:
 
     def _graph_neighborhood(self, tool_input: dict[str, Any]) -> AgentToolResult:
         project_id = _required_str(tool_input, "project_id")
+        requested_depth = _positive_int(tool_input.get("depth", 1), "depth")
         requested_node_limit = _positive_int(
             tool_input.get("node_limit", MAX_NEIGHBORHOOD_NODES),
             "node_limit",
@@ -142,6 +144,7 @@ class AgentToolRegistry:
             tool_input.get("relation_limit", MAX_NEIGHBORHOOD_RELATIONS),
             "relation_limit",
         )
+        effective_depth = min(requested_depth, MAX_NEIGHBORHOOD_DEPTH)
         effective_node_limit = min(requested_node_limit, MAX_NEIGHBORHOOD_NODES)
         effective_relation_limit = min(
             requested_relation_limit,
@@ -154,7 +157,7 @@ class AgentToolRegistry:
                 tool_input.get("focus_entity_id"),
                 "focus_entity_id",
             ),
-            depth=_positive_int(tool_input.get("depth", 1), "depth"),
+            depth=effective_depth,
             relation_types=_string_list(
                 tool_input.get("relation_types", []),
                 "relation_types",
@@ -179,11 +182,14 @@ class AgentToolRegistry:
             "relations": relations,
             "evidence_ids": evidence_ids,
             "metadata": {
+                "requested_depth": requested_depth,
+                "effective_depth": effective_depth,
                 "requested_node_limit": requested_node_limit,
                 "effective_node_limit": effective_node_limit,
                 "requested_relation_limit": requested_relation_limit,
                 "effective_relation_limit": effective_relation_limit,
-                "truncated": requested_node_limit > effective_node_limit
+                "truncated": requested_depth > effective_depth
+                or requested_node_limit > effective_node_limit
                 or requested_relation_limit > effective_relation_limit
                 or len(raw_nodes) > effective_node_limit
                 or len(raw_relations) > effective_relation_limit
@@ -429,8 +435,11 @@ def _string_list(value: Any, key: str) -> list[str]:
                 f"Agent tool input field must be a list of strings: {key}"
             )
         stripped = item.strip()
-        if stripped:
-            rows.append(stripped)
+        if not stripped:
+            raise ToolExecutionError(
+                f"Agent tool input field must not contain blank strings: {key}"
+            )
+        rows.append(stripped)
     return rows
 
 
@@ -460,7 +469,12 @@ def _prior_agents(value: Any) -> dict[str, AgentRoleResult] | None:
         if isinstance(result, AgentRoleResult):
             agents[str(name)] = result
         elif isinstance(result, dict):
-            agents[str(name)] = AgentRoleResult.from_dict(result)
+            try:
+                agents[str(name)] = AgentRoleResult.from_dict(result)
+            except (TypeError, ValueError) as exc:
+                raise ToolExecutionError(
+                    f"prior_agents contains malformed AgentRoleResult payload: {name}"
+                ) from exc
         else:
             raise ToolExecutionError("prior_agents values must be AgentRoleResult payloads.")
     return agents

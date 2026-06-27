@@ -3,6 +3,7 @@ import pytest
 from src.project_archive.agent_tools import (
     MAX_EVIDENCE_CARDS,
     MAX_GRAPH_SEARCH_LIMIT,
+    MAX_NEIGHBORHOOD_DEPTH,
     MAX_NEIGHBORHOOD_NODES,
     MAX_NEIGHBORHOOD_RELATIONS,
     AgentToolRegistry,
@@ -233,6 +234,21 @@ def test_oversized_graph_neighborhood_limits_are_capped():
     assert result.payload["metadata"]["truncated"] is True
 
 
+def test_oversized_graph_neighborhood_depth_is_capped():
+    service = FakeService()
+    registry = AgentToolRegistry(service)
+
+    result = registry.execute(
+        "graph_neighborhood",
+        {"project_id": "demo", "depth": 99},
+    )
+
+    assert service.last_neighborhood_kwargs["depth"] == MAX_NEIGHBORHOOD_DEPTH
+    assert result.payload["metadata"]["requested_depth"] == 99
+    assert result.payload["metadata"]["effective_depth"] == MAX_NEIGHBORHOOD_DEPTH
+    assert result.payload["metadata"]["truncated"] is True
+
+
 def test_get_evidence_returns_selected_cards():
     registry = AgentToolRegistry(FakeService())
 
@@ -291,6 +307,20 @@ def test_unknown_specialist_role_is_rejected_by_registry():
         registry.execute(
             "run_specialist_agent",
             {"project_id": "demo", "role": "shell"},
+        )
+
+
+def test_malformed_prior_agents_is_rejected_with_tool_error():
+    registry = AgentToolRegistry(FakeService())
+
+    with pytest.raises(ToolExecutionError, match="malformed AgentRoleResult"):
+        registry.execute(
+            "run_specialist_agent",
+            {
+                "project_id": "demo",
+                "role": "archivist",
+                "prior_agents": {"archivist": {"agent": "archivist"}},
+            },
         )
 
 
