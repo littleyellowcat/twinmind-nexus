@@ -346,6 +346,42 @@ def test_runtime_all_tool_errors_mark_mission_failed_and_report_counts(tmp_path)
     assert "completed 0, failed 1, skipped 0" in result.final_report.summary
 
 
+def test_runtime_partial_task_makes_mission_partial(tmp_path):
+    class LaterErrorService(RuntimeFakeService):
+        def __init__(self, storage_dir: Path):
+            super().__init__(storage_dir)
+            self.load_count = 0
+
+        def load_draft(self, project_id):
+            self.load_count += 1
+            if self.load_count > 1:
+                raise ValueError("draft unavailable during later tool call")
+            return super().load_draft(project_id)
+
+    service = LaterErrorService(tmp_path)
+    store = MissionStore(tmp_path)
+    runtime = AgentMissionRuntime(
+        service=service,
+        store=store,
+        tool_registry=AgentToolRegistry(service),
+        llm=None,
+    )
+    mission = plan_agent_mission(
+        draft=service.draft,
+        goal="Understand architecture",
+        max_tasks=1,
+        max_steps_per_task=2,
+    )
+    store.save(mission)
+
+    result = runtime.run(mission.id)
+
+    assert result.status == "partial"
+    assert result.tasks[0].status == "partial"
+    assert result.tasks[0].steps_used == 2
+    assert [event.event_type for event in result.trace_events] == ["action", "error"]
+
+
 def test_verifier_copies_findings_and_final_report_keeps_only_valid_evidence(tmp_path):
     service = RuntimeFakeService(tmp_path)
     runtime = AgentMissionRuntime(
@@ -374,6 +410,9 @@ def test_verifier_copies_findings_and_final_report_keeps_only_valid_evidence(tmp
 
     assert verifier_result.status == "accepted"
     assert "verification_status" not in original_finding
+    assert verified.tasks[0].findings[0]["evidence_ids"] == ["ev_main"]
     assert verified.tasks[0].findings[0]["supported_evidence_ids"] == ["ev_main"]
     assert verified.tasks[0].findings[0]["invalid_evidence_ids"] == ["missing_ev"]
     assert final_report.evidence_ids == ["ev_main"]
+    assert final_report.findings[0]["evidence_ids"] == ["ev_main"]
+    assert "missing_ev" not in final_report.findings[0]["evidence_ids"]

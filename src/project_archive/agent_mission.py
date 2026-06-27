@@ -210,6 +210,7 @@ class EvidenceVerifier:
                 for evidence_id in evidence_ids
                 if evidence_id not in valid_evidence_ids
             ]
+            verified_finding["evidence_ids"] = supported_evidence_ids
             verified_finding["supported_evidence_ids"] = supported_evidence_ids
             if invalid_evidence_ids:
                 verified_finding["invalid_evidence_ids"] = invalid_evidence_ids
@@ -674,7 +675,8 @@ def _mission_status(tasks: list[AgentMissionTask]) -> str:
     completed_count = sum(1 for task in tasks if task.status == "complete")
     if completed_count == len(tasks):
         return "complete"
-    if completed_count:
+    partial_count = sum(1 for task in tasks if task.status == "partial")
+    if completed_count or partial_count:
         return "partial"
     return "failed"
 
