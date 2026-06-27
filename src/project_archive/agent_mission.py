@@ -12,7 +12,7 @@ from typing import Any
 from uuid import uuid4
 
 from src.libs.llm import BaseLLM, Message
-from src.project_archive.agent_tools import AgentToolRegistry, SPECIALIST_ROLES
+from src.project_archive.agent_tools import SPECIALIST_ROLES, AgentToolRegistry
 from src.project_archive.types import (
     AgentMission,
     AgentMissionBudget,

@@ -33,8 +33,8 @@ from src.project_archive.scanner import (
     normalize_scan_profile,
 )
 from src.project_archive.service import (
-    ProjectArchiveService,
     TERMINAL_AGENT_MISSION_STATUSES,
+    ProjectArchiveService,
 )
 from src.project_archive.types import QueryMode
 

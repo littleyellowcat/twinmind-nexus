@@ -7,18 +7,18 @@ import re
 from dataclasses import replace
 from pathlib import Path
 
+from src.project_archive.agent_mission import (
+    TERMINAL_MISSION_STATUSES,
+    AgentMissionRuntime,
+    MissionStore,
+)
+from src.project_archive.agent_tools import AgentToolRegistry
 from src.project_archive.agents import AgentWorkflow
 from src.project_archive.archive_builder import ArchiveBuilder
 from src.project_archive.autonomous_mission import (
     ARCHITECTURE_GOAL,
     run_architecture_mission,
 )
-from src.project_archive.agent_mission import (
-    AgentMissionRuntime,
-    MissionStore,
-    TERMINAL_MISSION_STATUSES,
-)
-from src.project_archive.agent_tools import AgentToolRegistry
 from src.project_archive.graph_explorer import (
     build_graph_neighborhood,
     build_graph_summary,

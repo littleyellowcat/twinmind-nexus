@@ -1,9 +1,18 @@
-from dataclasses import replace
 import json
+from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
 from src.libs.llm import ChatResponse, Message
+from src.project_archive.agent_mission import (
+    AgentMissionRuntime,
+    EvidenceVerifier,
+    MissionStore,
+    plan_agent_mission,
+)
+from src.project_archive.agent_tools import AgentToolRegistry, AgentToolResult
+from src.project_archive.service import ProjectArchiveService
 from src.project_archive.types import (
     AgentMission,
     AgentMissionBudget,
@@ -11,6 +20,11 @@ from src.project_archive.types import (
     AgentMissionTask,
     AgentMissionVerifierResult,
     AgentTraceEvent,
+    ArchiveHall,
+    EvidenceCard,
+    ProjectArchiveDraft,
+    ProjectEntity,
+    ProjectRelation,
 )
 
 
@@ -76,25 +90,6 @@ def test_agent_mission_round_trips_trace_and_verifier_result():
     assert restored.tasks[0].allowed_tools == ["graph_summary", "inspect_entity"]
     assert restored.trace_events[0].tool_input == {"project_id": "demo"}
     assert restored.verifier_result.status == "accepted"
-
-
-from pathlib import Path
-
-from src.project_archive.agent_mission import (
-    AgentMissionRuntime,
-    EvidenceVerifier,
-    MissionStore,
-    plan_agent_mission,
-)
-from src.project_archive.agent_tools import AgentToolRegistry, AgentToolResult
-from src.project_archive.service import ProjectArchiveService
-from src.project_archive.types import (
-    ArchiveHall,
-    EvidenceCard,
-    ProjectArchiveDraft,
-    ProjectEntity,
-    ProjectRelation,
-)
 
 
 class RuntimeFakeService:
