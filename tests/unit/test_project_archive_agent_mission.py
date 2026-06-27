@@ -219,6 +219,28 @@ class RaisingActionLLM:
         raise RuntimeError(self.message)
 
 
+class StoppingActionLLM:
+    model = "stopping-action-model"
+
+    def __init__(self, store: MissionStore, mission_id: str):
+        self.store = store
+        self.mission_id = mission_id
+        self.messages: list[list[Message]] = []
+
+    def chat(self, messages, trace=None, **kwargs):
+        self.messages.append(messages)
+        self.store.update_status(self.mission_id, "stopped")
+        return ChatResponse(
+            content=(
+                '{"thought_summary":"Use summary",'
+                '"action":{"tool":"graph_summary","input":{"project_id":"demo"}},'
+                '"stop":false}'
+            ),
+            model=self.model,
+            usage={"total_tokens": 12},
+        )
+
+
 def write_fake_draft(tmp_path: Path) -> None:
     archive_dir = tmp_path / "demo"
     archive_dir.mkdir()
@@ -811,3 +833,44 @@ def test_runtime_stop_is_cooperative_and_final_save_does_not_overwrite(tmp_path)
     assert result.trace_events == []
     assert stored.trace_events == []
     assert stored.completed_at is not None
+
+
+def test_runtime_stop_after_llm_selection_prevents_tool_execution(tmp_path):
+    class SpyToolRegistry:
+        def __init__(self):
+            self.calls = []
+
+        def execute(self, tool_name, tool_input):
+            self.calls.append((tool_name, tool_input))
+            return AgentToolResult(
+                tool_name=tool_name,
+                summary="Should not execute.",
+                payload={},
+                evidence_ids=[],
+                entity_ids=[],
+                relation_ids=[],
+            )
+
+    service = RuntimeFakeService(tmp_path)
+    store = MissionStore(tmp_path)
+    mission = plan_agent_mission(
+        draft=service.draft,
+        goal="Understand architecture",
+        max_tasks=1,
+        max_steps_per_task=1,
+    )
+    store.save(mission)
+    tool_registry = SpyToolRegistry()
+    llm = StoppingActionLLM(store, mission.id)
+    runtime = AgentMissionRuntime(
+        service=service,
+        store=store,
+        tool_registry=tool_registry,
+        llm=llm,
+    )
+
+    result = runtime.run(mission.id)
+
+    assert result.status == "stopped"
+    assert llm.messages
+    assert tool_registry.calls == []

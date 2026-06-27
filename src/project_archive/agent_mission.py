@@ -619,6 +619,9 @@ class AgentMissionRuntime:
                     default_tool_input=default_tool_input,
                     trace_events=trace_events,
                 )
+                interrupted = self._interrupted_mission(running.id)
+                if interrupted is not None:
+                    return interrupted
                 if tool_name not in task.allowed_tools:
                     now = utc_now()
                     trace_events.append(
