@@ -740,15 +740,40 @@ def test_service_run_agent_mission_does_not_rerun_stopped_mission(tmp_path, monk
 
     assert rerun.status == "stopped"
     assert rerun.trace_events == stopped.trace_events == []
+    assert rerun.completed_at is not None
 
 
-def test_runtime_final_save_does_not_overwrite_stopped_mission(tmp_path):
+def test_runtime_run_returns_terminal_mission_without_loading_draft(tmp_path):
+    class DraftUnavailableService(RuntimeFakeService):
+        def load_draft(self, project_id):
+            raise AssertionError("load_draft should not run for terminal missions")
+
+    service = DraftUnavailableService(tmp_path)
+    store = MissionStore(tmp_path)
+    runtime = AgentMissionRuntime(
+        service=service,
+        store=store,
+        tool_registry=AgentToolRegistry(service),
+        llm=None,
+    )
+    mission = plan_agent_mission(draft=service.draft, goal="Understand architecture")
+    store.save(mission)
+    stopped = store.update_status(mission.id, "stopped")
+
+    result = runtime.run(mission.id)
+
+    assert result == stopped
+
+
+def test_runtime_stop_is_cooperative_and_final_save_does_not_overwrite(tmp_path):
     class StoppingToolRegistry:
         def __init__(self, store):
             self.store = store
             self.mission_id = ""
+            self.calls = []
 
         def execute(self, tool_name, tool_input):
+            self.calls.append(tool_name)
             self.store.update_status(self.mission_id, "stopped")
             return AgentToolResult(
                 tool_name=tool_name,
@@ -772,7 +797,7 @@ def test_runtime_final_save_does_not_overwrite_stopped_mission(tmp_path):
         draft=service.draft,
         goal="Understand architecture",
         max_tasks=1,
-        max_steps_per_task=1,
+        max_steps_per_task=2,
     )
     store.save(mission)
     tool_registry.mission_id = mission.id
@@ -782,5 +807,7 @@ def test_runtime_final_save_does_not_overwrite_stopped_mission(tmp_path):
 
     assert result.status == "stopped"
     assert stored.status == "stopped"
+    assert tool_registry.calls == ["graph_summary"]
     assert result.trace_events == []
     assert stored.trace_events == []
+    assert stored.completed_at is not None

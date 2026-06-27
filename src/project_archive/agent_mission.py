@@ -357,6 +357,16 @@ class MissionStore:
                 tmp_path.unlink()
         return mission
 
+    def save_if_not_interrupted(
+        self,
+        mission: AgentMission,
+        interrupted_statuses: set[str],
+    ) -> AgentMission:
+        stored = self.load(mission.id)
+        if stored.status in interrupted_statuses:
+            return stored
+        return self.save(mission)
+
     def load(self, mission_id: str) -> AgentMission:
         self._validate_mission_id(mission_id)
         if not self.storage_dir.exists():
@@ -373,7 +383,10 @@ class MissionStore:
     def update_status(self, mission_id: str, status: str) -> AgentMission:
         mission = self.load(mission_id)
         completed_at = mission.completed_at
-        if status in {"complete", "failed", "cancelled"} and not completed_at:
+        if (
+            status in {"complete", "failed", "stopped", "cancelled"}
+            and not completed_at
+        ):
             completed_at = utc_now()
         updated = replace(mission, status=status, completed_at=completed_at)
         return self.save(updated)
@@ -514,6 +527,8 @@ class AgentMissionRuntime:
 
     def run(self, mission_id: str) -> AgentMission:
         mission = self.load(mission_id)
+        if mission.status in TERMINAL_MISSION_STATUSES:
+            return mission
         draft = self.service.load_draft(mission.project_id)
         return self._run_to_completion(mission, draft)
 
@@ -533,6 +548,9 @@ class AgentMissionRuntime:
     ) -> AgentMission:
         if mission.status in TERMINAL_MISSION_STATUSES:
             return mission
+        interrupted = self._interrupted_mission(mission.id)
+        if interrupted is not None:
+            return interrupted
 
         running = replace(mission, status="running")
         self.store.save(running)
@@ -548,6 +566,9 @@ class AgentMissionRuntime:
         skipped_budget_tasks = running.tasks[running.budget.max_tasks :]
 
         for task in selected_tasks:
+            interrupted = self._interrupted_mission(running.id)
+            if interrupted is not None:
+                return interrupted
             if tool_calls_used >= running.budget.max_tool_calls:
                 completed_tasks.append(replace(task, status="skipped", steps_used=0))
                 continue
@@ -563,6 +584,9 @@ class AgentMissionRuntime:
             timed_out = False
 
             for default_tool_name, default_tool_input in calls:
+                interrupted = self._interrupted_mission(running.id)
+                if interrupted is not None:
+                    return interrupted
                 if tool_calls_used >= running.budget.max_tool_calls:
                     break
                 if monotonic() - started_monotonic >= timeout_seconds:
@@ -710,10 +734,13 @@ class AgentMissionRuntime:
         )
         verified = self._verify_mission(completed, draft)
         final = replace(verified, final_report=self._final_report(verified))
-        stored = self.store.load(running.id)
+        return self.store.save_if_not_interrupted(final, INTERRUPTED_MISSION_STATUSES)
+
+    def _interrupted_mission(self, mission_id: str) -> AgentMission | None:
+        stored = self.store.load(mission_id)
         if stored.status in INTERRUPTED_MISSION_STATUSES:
             return stored
-        return self.store.save(final)
+        return None
 
     def _default_tool_calls(
         self,
