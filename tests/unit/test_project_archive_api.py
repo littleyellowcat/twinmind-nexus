@@ -465,6 +465,30 @@ def test_agent_mission_pause_resume_are_unsupported_and_do_not_mutate(
     assert status_after == status_before
 
 
+def test_agent_mission_stop_preserves_partial_status(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("TWINMIND_AGENT_LLM_ENABLED", "false")
+    client = _client(tmp_path)
+    service = ProjectArchiveService(storage_dir=tmp_path)
+    planned = service.create_agent_mission(
+        "sample",
+        "Understand project architecture",
+        max_tasks=2,
+        max_steps_per_task=2,
+    )
+    partial = service.update_agent_mission_status(planned.id, "partial")
+
+    rerun = service.run_agent_mission(partial.id)
+    stopped = client.post(f"/api/agent-missions/{partial.id}/stop")
+
+    assert rerun.status == "partial"
+    assert rerun.trace_events == []
+    assert stopped.status_code == 200
+    assert stopped.json()["status"] == "partial"
+
+
 def test_upload_archive_ingests_project_zip(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("TWINMIND_AGENT_LLM_ENABLED", "false")
     client = _client(tmp_path)

@@ -26,7 +26,7 @@ from src.project_archive.types import (
 DEFAULT_AGENT_GOAL = "Understand project architecture"
 MISSION_ID_GLOB_CHARS = {"*", "?", "[", "]", "{", "}"}
 MAX_THOUGHT_SUMMARY_CHARS = 240
-TERMINAL_MISSION_STATUSES = {"complete", "failed", "stopped", "cancelled"}
+TERMINAL_MISSION_STATUSES = {"complete", "partial", "failed", "stopped", "cancelled"}
 INTERRUPTED_MISSION_STATUSES = {"stopped", "cancelled"}
 
 
@@ -383,10 +383,7 @@ class MissionStore:
     def update_status(self, mission_id: str, status: str) -> AgentMission:
         mission = self.load(mission_id)
         completed_at = mission.completed_at
-        if (
-            status in {"complete", "failed", "stopped", "cancelled"}
-            and not completed_at
-        ):
+        if status in TERMINAL_MISSION_STATUSES and not completed_at:
             completed_at = utc_now()
         updated = replace(mission, status=status, completed_at=completed_at)
         return self.save(updated)

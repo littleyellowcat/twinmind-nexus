@@ -13,7 +13,11 @@ from src.project_archive.autonomous_mission import (
     ARCHITECTURE_GOAL,
     run_architecture_mission,
 )
-from src.project_archive.agent_mission import AgentMissionRuntime, MissionStore
+from src.project_archive.agent_mission import (
+    AgentMissionRuntime,
+    MissionStore,
+    TERMINAL_MISSION_STATUSES,
+)
 from src.project_archive.agent_tools import AgentToolRegistry
 from src.project_archive.graph_explorer import (
     build_graph_neighborhood,
@@ -42,7 +46,7 @@ from src.project_archive.types import (
 )
 
 MISSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
-TERMINAL_AGENT_MISSION_STATUSES = {"complete", "failed", "stopped", "cancelled"}
+TERMINAL_AGENT_MISSION_STATUSES = TERMINAL_MISSION_STATUSES
 
 
 class ProjectArchiveService:
