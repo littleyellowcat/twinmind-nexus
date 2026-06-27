@@ -105,11 +105,18 @@ IGNORED_PARTS = {
 class ArchiveQueryRequest(BaseModel):
     question: str = Field(min_length=1)
     mode: QueryMode = QueryMode.EVIDENCE_QA
+    hall_id: str | None = None
 
 
 class MissionStartRequest(BaseModel):
     goal: str = ARCHITECTURE_GOAL
     max_steps: int = Field(default=12, ge=1, le=12)
+
+
+class AgentMissionStartRequest(BaseModel):
+    goal: str = Field(default="Understand project architecture", min_length=1)
+    max_tasks: int = Field(default=5, ge=1, le=8)
+    max_steps_per_task: int = Field(default=4, ge=1, le=8)
 
 
 @dataclass
@@ -232,10 +239,6 @@ def create_app() -> FastAPI:
                     project_id=archive_id,
                     scan_profile=normalized_scan_profile,
                 )
-                agent_report = service.run_agent_report(
-                    project_id=draft.project_id,
-                    scan_profile=normalized_scan_profile,
-                )
         except BadZipFile as exc:
             raise HTTPException(status_code=400, detail="Invalid ZIP archive.") from exc
         except ValueError as exc:
@@ -250,7 +253,6 @@ def create_app() -> FastAPI:
                 "evidence": len(draft.evidence_cards),
             },
             "archive": draft.to_dict(),
-            "agent_report": agent_report.to_dict(),
         }
 
     @app.get("/api/archives/{project_id}")
@@ -264,6 +266,13 @@ def create_app() -> FastAPI:
     def get_graph_summary(project_id: str, service: ServiceDep) -> dict:
         try:
             return service.graph_summary(project_id).to_dict()
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get("/api/archives/{project_id}/rag-status")
+    def get_hybrid_rag_status(project_id: str, service: ServiceDep) -> dict:
+        try:
+            return service.hybrid_rag_status(project_id)
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -288,6 +297,23 @@ def create_app() -> FastAPI:
                 node_limit=node_limit,
                 relation_limit=relation_limit,
             ).to_dict()
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get("/api/archives/{project_id}/graph/search")
+    def search_graph_entities(
+        project_id: str,
+        service: ServiceDep,
+        q: str = "",
+        limit: int = 20,
+    ) -> dict:
+        try:
+            results = service.search_graph_entities(
+                project_id,
+                query=q,
+                limit=limit,
+            )
+            return {"results": [result.to_dict() for result in results]}
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -366,6 +392,65 @@ def create_app() -> FastAPI:
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
+    @app.post("/api/archives/{project_id}/agent-missions", status_code=202)
+    def start_agent_mission(
+        project_id: str,
+        request: AgentMissionStartRequest,
+        background_tasks: BackgroundTasks,
+        service: ServiceDep,
+    ) -> dict:
+        try:
+            mission = service.create_agent_mission(
+                project_id=project_id,
+                goal=request.goal,
+                max_tasks=request.max_tasks,
+                max_steps_per_task=request.max_steps_per_task,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+        background_tasks.add_task(service.run_agent_mission, mission.id)
+        return mission.to_dict()
+
+    @app.get("/api/agent-missions/{mission_id}")
+    def get_agent_mission(mission_id: str, service: ServiceDep) -> dict:
+        try:
+            return service.load_agent_mission(mission_id).to_dict()
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get("/api/agent-missions/{mission_id}/trace")
+    def get_agent_mission_trace(mission_id: str, service: ServiceDep) -> dict:
+        try:
+            trace_events = service.agent_mission_trace(mission_id)
+            return {
+                "mission_id": mission_id,
+                "trace_events": [event.to_dict() for event in trace_events],
+            }
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/api/agent-missions/{mission_id}/pause")
+    def pause_agent_mission(mission_id: str, service: ServiceDep) -> dict:
+        try:
+            return service.update_agent_mission_status(mission_id, "paused").to_dict()
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/api/agent-missions/{mission_id}/resume")
+    def resume_agent_mission(mission_id: str, service: ServiceDep) -> dict:
+        try:
+            return service.update_agent_mission_status(mission_id, "complete").to_dict()
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/api/agent-missions/{mission_id}/stop")
+    def stop_agent_mission(mission_id: str, service: ServiceDep) -> dict:
+        try:
+            return service.update_agent_mission_status(mission_id, "stopped").to_dict()
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
     @app.post("/api/archives/{project_id}/query")
     def query_archive(
         project_id: str,
@@ -377,6 +462,7 @@ def create_app() -> FastAPI:
                 project_id=project_id,
                 question=request.question,
                 mode=request.mode,
+                hall_id=request.hall_id,
             ).to_dict()
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -496,22 +582,22 @@ def _run_upload_job(
         _update_job(job_id, status="running", progress=12, message="Extracting project ZIP.")
         with TemporaryDirectory(prefix="twinmind-upload-") as tmpdir:
             project_root = _extract_project_zip(payload, Path(tmpdir), scan_profile=scan_profile)
-            _update_job(job_id, progress=38, message="Building project knowledge graph.")
+            _update_job(
+                job_id,
+                progress=38,
+                message="Building graph, Hybrid RAG index, and image captions.",
+            )
             draft = service.ingest_project(
                 project_root=project_root,
                 project_id=archive_id,
                 scan_profile=scan_profile,
             )
-            _update_job(job_id, progress=72, message="Running multi-agent archive analysis.")
-            agent_report = service.run_agent_report(
-                project_id=draft.project_id,
-                scan_profile=scan_profile,
-            )
+            _update_job(job_id, progress=84, message="Finalizing archive.")
         _update_job(
             job_id,
             status="complete",
             progress=100,
-            message="Archive and Agent report are ready.",
+            message="Archive is ready. Run Agent analysis when needed.",
             project_id=draft.project_id,
             result={
                 "project_id": draft.project_id,
@@ -522,7 +608,6 @@ def _run_upload_job(
                     "evidence": len(draft.evidence_cards),
                 },
                 "archive": draft.to_dict(),
-                "agent_report": agent_report.to_dict(),
             },
         )
     except BadZipFile as exc:

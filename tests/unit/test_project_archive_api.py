@@ -189,6 +189,21 @@ def test_get_graph_neighborhood_returns_404_for_unknown_archive(
     assert response.status_code == 404
 
 
+def test_search_graph_entities_returns_matching_entities(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+
+    response = client.get(
+        "/api/archives/sample/graph/search",
+        params={"q": "app", "limit": 5},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["results"]
+    assert payload["results"][0]["entity_id"] == "file:app.py"
+    assert "name" in payload["results"][0]["matched_fields"]
+
+
 def test_start_architecture_mission_returns_completed_bounded_mission(
     tmp_path: Path,
 ) -> None:
@@ -325,6 +340,39 @@ def test_mission_status_update_preserves_persisted_tasks_and_overlay(
     assert payload["graph_overlay"]["explored_node_ids"]
 
 
+def test_agent_mission_endpoints_return_mission_and_trace(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("TWINMIND_AGENT_LLM_ENABLED", "false")
+    client = _client(tmp_path)
+
+    response = client.post(
+        "/api/archives/sample/agent-missions",
+        json={
+            "goal": "Understand project architecture",
+            "max_tasks": 2,
+            "max_steps_per_task": 2,
+        },
+    )
+
+    assert response.status_code == 202
+    mission = response.json()
+    assert mission["project_id"] == "sample"
+    assert mission["tasks"]
+
+    loaded = client.get(f"/api/agent-missions/{mission['id']}")
+    trace = client.get(f"/api/agent-missions/{mission['id']}/trace")
+    stopped = client.post(f"/api/agent-missions/{mission['id']}/stop")
+
+    assert loaded.status_code == 200
+    assert loaded.json()["status"] in {"planned", "running", "complete"}
+    assert trace.status_code == 200
+    assert "trace_events" in trace.json()
+    assert stopped.status_code == 200
+    assert stopped.json()["status"] == "stopped"
+
+
 def test_upload_archive_ingests_project_zip(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("TWINMIND_AGENT_LLM_ENABLED", "false")
     client = _client(tmp_path)
@@ -344,16 +392,61 @@ def test_upload_archive_ingests_project_zip(tmp_path: Path, monkeypatch) -> None
     assert payload["project_id"] == "demo-project"
     assert payload["metrics"]["entities"] > 0
     assert payload["archive"]["project_id"] == "demo-project"
-    assert payload["agent_report"]["project_id"] == "demo-project"
-    assert payload["agent_report"]["agents"]["archivist"]["status"] == "complete"
-    assert payload["agent_report"]["agents"]["curator"]["status"] == "complete"
+    assert "agent_report" not in payload
     assert (tmp_path / "demo-project" / "draft_archive.json").exists()
-    assert (tmp_path / "demo-project" / "agent_report.json").exists()
+    assert not (tmp_path / "demo-project" / "agent_report.json").exists()
 
     report_response = client.get("/api/archives/demo-project/agent-report")
 
-    assert report_response.status_code == 200
-    assert report_response.json()["agents"]["skeptic"]["agent"] == "skeptic"
+    assert report_response.status_code == 404
+
+
+def test_upload_archive_keeps_monorepo_source_layouts(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("TWINMIND_AGENT_LLM_ENABLED", "false")
+    client = _client(tmp_path)
+    zip_buffer = BytesIO()
+    with ZipFile(zip_buffer, "w") as archive:
+        archive.writestr("dubbo-like/README.md", "# Dubbo Like\n")
+        archive.writestr(
+            "dubbo-like/dubbo-common/src/main/java/demo/UserService.java",
+            "package demo;\n"
+            "import java.util.List;\n"
+            "class UserService { User getUser(String id) { return repo.findById(id); } }\n",
+        )
+        archive.writestr(
+            "dubbo-like/dubbo-rpc/src/main/java/demo/RpcClient.java",
+            "package demo;\nclass RpcClient {}\n",
+        )
+        archive.writestr(
+            "dubbo-like/tests/src/test/java/demo/UserServiceTest.java",
+            "class UserServiceTest {}\n",
+        )
+
+    response = client.post(
+        "/api/archives/upload",
+        files={"file": ("dubbo-like.zip", zip_buffer.getvalue(), "application/zip")},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    entity_names = {entity["name"] for entity in payload["archive"]["entities"]}
+    source_paths = {
+        entity["source_path"]
+        for entity in payload["archive"]["entities"]
+        if entity.get("source_path")
+    }
+    relation_types = {
+        relation["type"] for relation in payload["archive"]["relations"]
+    }
+
+    assert "UserService" in entity_names
+    assert "RpcClient" in entity_names
+    assert any("dubbo-common/src/main/java/demo/UserService.java" in path for path in source_paths)
+    assert all("UserServiceTest.java" not in path for path in source_paths)
+    assert {"IMPORTS", "DEPENDS_ON", "CALLS"} <= relation_types
 
 
 def test_upload_archive_job_reports_progress_and_result(
@@ -383,7 +476,7 @@ def test_upload_archive_job_reports_progress_and_result(
     assert payload["progress"] == 100
     assert payload["project_id"] == "job-project"
     assert payload["result"]["archive"]["project_id"] == "job-project"
-    assert payload["result"]["agent_report"]["agents"]["curator"]["agent"] == "curator"
+    assert "agent_report" not in payload["result"]
 
 
 def test_run_agent_report_job_reports_progress_and_result(
