@@ -1,3 +1,7 @@
+from dataclasses import replace
+
+import pytest
+
 from src.project_archive.types import (
     AgentMission,
     AgentMissionBudget,
@@ -238,3 +242,138 @@ def test_runtime_runs_tools_and_persists_trace(tmp_path):
     assert restored.final_report is not None
     assert restored.verifier_result is not None
     assert runtime.trace(mission.id) == restored.trace_events
+
+
+def test_mission_store_rejects_glob_like_ids_without_matching_saved_mission(tmp_path):
+    draft = RuntimeFakeService(tmp_path).draft
+    store = MissionStore(tmp_path)
+    mission = plan_agent_mission(draft=draft, goal="Understand architecture")
+    store.save(mission)
+
+    for unsafe_id in ["*", "?", "[abc]", "{abc}", f"{mission.id}*"]:
+        with pytest.raises(ValueError):
+            store.load(unsafe_id)
+
+    assert store.load(mission.id).id == mission.id
+
+
+def test_runtime_timeout_marks_mission_failed_without_tool_execution(tmp_path):
+    service = RuntimeFakeService(tmp_path)
+    store = MissionStore(tmp_path)
+    runtime = AgentMissionRuntime(
+        service=service,
+        store=store,
+        tool_registry=AgentToolRegistry(service),
+        llm=None,
+    )
+    mission = plan_agent_mission(
+        draft=service.draft,
+        goal="Understand architecture",
+        max_tasks=2,
+        max_steps_per_task=2,
+    )
+    mission = replace(
+        mission,
+        budget=replace(mission.budget, timeout_seconds=0),
+    )
+    store.save(mission)
+
+    result = runtime.run(mission.id)
+
+    assert result.status == "failed"
+    assert result.tasks[0].status == "timeout"
+    assert result.tasks[0].steps_used == 1
+    assert result.tasks[1].status == "skipped"
+    assert len(result.trace_events) == 1
+    assert result.trace_events[0].event_type == "error"
+    assert result.trace_events[0].error == "Mission timeout expired."
+
+
+def test_runtime_max_tool_calls_exhaustion_marks_remaining_tasks_partial(tmp_path):
+    service = RuntimeFakeService(tmp_path)
+    store = MissionStore(tmp_path)
+    runtime = AgentMissionRuntime(
+        service=service,
+        store=store,
+        tool_registry=AgentToolRegistry(service),
+        llm=None,
+    )
+    mission = plan_agent_mission(
+        draft=service.draft,
+        goal="Understand architecture",
+        max_tasks=2,
+        max_steps_per_task=2,
+    )
+    mission = replace(mission, budget=replace(mission.budget, max_tool_calls=1))
+    store.save(mission)
+
+    result = runtime.run(mission.id)
+
+    assert result.status == "partial"
+    assert result.tasks[0].status == "complete"
+    assert result.tasks[0].steps_used == 1
+    assert result.tasks[1].status == "skipped"
+    assert len(result.trace_events) == 1
+
+
+def test_runtime_all_tool_errors_mark_mission_failed_and_report_counts(tmp_path):
+    class ErrorService(RuntimeFakeService):
+        def graph_summary(self, project_id):
+            raise ValueError("graph summary unavailable")
+
+    service = ErrorService(tmp_path)
+    store = MissionStore(tmp_path)
+    runtime = AgentMissionRuntime(
+        service=service,
+        store=store,
+        tool_registry=AgentToolRegistry(service),
+        llm=None,
+    )
+    mission = plan_agent_mission(
+        draft=service.draft,
+        goal="Understand architecture",
+        max_tasks=1,
+        max_steps_per_task=1,
+    )
+    store.save(mission)
+
+    result = runtime.run(mission.id)
+
+    assert result.status == "failed"
+    assert result.tasks[0].status == "failed"
+    assert result.tasks[0].steps_used == 1
+    assert result.final_report is not None
+    assert "completed 0, failed 1, skipped 0" in result.final_report.summary
+
+
+def test_verifier_copies_findings_and_final_report_keeps_only_valid_evidence(tmp_path):
+    service = RuntimeFakeService(tmp_path)
+    runtime = AgentMissionRuntime(
+        service=service,
+        store=MissionStore(tmp_path),
+        tool_registry=AgentToolRegistry(service),
+        llm=None,
+    )
+    mission = plan_agent_mission(
+        draft=service.draft,
+        goal="Understand architecture",
+        max_tasks=1,
+        max_steps_per_task=1,
+    )
+    original_finding = {
+        "summary": "Mixed evidence claim.",
+        "evidence_ids": ["ev_main", "missing_ev"],
+    }
+    task = replace(mission.tasks[0], status="complete", findings=[original_finding])
+    mission = replace(mission, status="complete", tasks=[task])
+
+    verifier = EvidenceVerifier()
+    verifier_result = verifier.verify_task(task=task, draft=service.draft)
+    verified = runtime._verify_mission(mission, service.draft)
+    final_report = runtime._final_report(verified)
+
+    assert verifier_result.status == "accepted"
+    assert "verification_status" not in original_finding
+    assert verified.tasks[0].findings[0]["supported_evidence_ids"] == ["ev_main"]
+    assert verified.tasks[0].findings[0]["invalid_evidence_ids"] == ["missing_ev"]
+    assert final_report.evidence_ids == ["ev_main"]

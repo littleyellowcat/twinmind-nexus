@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
+from time import monotonic
 from typing import Any
 from uuid import uuid4
 
@@ -22,6 +24,7 @@ from src.project_archive.types import (
 )
 
 DEFAULT_AGENT_GOAL = "Understand project architecture"
+MISSION_ID_GLOB_CHARS = {"*", "?", "[", "]", "{", "}"}
 
 
 @dataclass(frozen=True)
@@ -123,15 +126,26 @@ class MissionStore:
 
     def save(self, mission: AgentMission) -> AgentMission:
         path = self._mission_path(mission.project_id, mission.id)
-        path.write_text(
-            json.dumps(mission.to_dict(), ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        tmp_path = path.with_name(f"{path.name}.tmp")
+        payload = json.dumps(mission.to_dict(), ensure_ascii=False, indent=2)
+        try:
+            tmp_path.write_text(payload, encoding="utf-8")
+            tmp_path.replace(path)
+        finally:
+            if tmp_path.exists():
+                tmp_path.unlink()
         return mission
 
     def load(self, mission_id: str) -> AgentMission:
         self._validate_mission_id(mission_id)
-        for path in self.storage_dir.glob(f"*/agent_missions/{mission_id}.json"):
+        if not self.storage_dir.exists():
+            raise ValueError(f"Agent mission not found: {mission_id}")
+        for project_dir in self.storage_dir.iterdir():
+            if not project_dir.is_dir():
+                continue
+            path = project_dir / "agent_missions" / f"{mission_id}.json"
+            if not path.is_file():
+                continue
             return AgentMission.from_dict(json.loads(path.read_text(encoding="utf-8")))
         raise ValueError(f"Agent mission not found: {mission_id}")
 
@@ -156,6 +170,8 @@ class MissionStore:
             raise ValueError("Agent mission id must be a non-empty string.")
         if any(char in mission_id for char in ("/", "\\")):
             raise ValueError(f"Invalid agent mission id: {mission_id}")
+        if any(char in mission_id for char in MISSION_ID_GLOB_CHARS):
+            raise ValueError(f"Invalid agent mission id: {mission_id}")
 
 
 class EvidenceVerifier:
@@ -164,36 +180,53 @@ class EvidenceVerifier:
         task: AgentMissionTask,
         draft: ProjectArchiveDraft,
     ) -> AgentMissionVerifierResult:
+        result, _findings = self._verify_task_findings(task=task, draft=draft)
+        return result
+
+    def _verify_task_findings(
+        self,
+        task: AgentMissionTask,
+        draft: ProjectArchiveDraft,
+    ) -> tuple[AgentMissionVerifierResult, list[dict[str, Any]]]:
         valid_evidence_ids = {card.id for card in draft.evidence_cards}
         supported_count = 0
         uncertain_count = 0
         warnings: list[str] = []
+        verified_findings: list[dict[str, Any]] = []
 
         if not task.findings:
             warnings.append(f"Task {task.id} produced no findings.")
 
         for index, finding in enumerate(task.findings, start=1):
+            verified_finding = deepcopy(finding)
             evidence_ids = _string_values(finding.get("evidence_ids", []))
             supported_evidence_ids = [
                 evidence_id
                 for evidence_id in evidence_ids
                 if evidence_id in valid_evidence_ids
             ]
+            invalid_evidence_ids = [
+                evidence_id
+                for evidence_id in evidence_ids
+                if evidence_id not in valid_evidence_ids
+            ]
+            verified_finding["supported_evidence_ids"] = supported_evidence_ids
+            if invalid_evidence_ids:
+                verified_finding["invalid_evidence_ids"] = invalid_evidence_ids
+                warnings.append(
+                    f"Task {task.id} finding {index} cites unknown evidence."
+                )
             if supported_evidence_ids:
                 supported_count += 1
-                finding["verification_status"] = "supported"
-                finding["supported_evidence_ids"] = supported_evidence_ids
+                verified_finding["verification_status"] = "supported"
             else:
                 uncertain_count += 1
-                finding["verification_status"] = "uncertain"
-                if evidence_ids:
-                    warnings.append(
-                        f"Task {task.id} finding {index} cites unknown evidence."
-                    )
-                else:
+                verified_finding["verification_status"] = "uncertain"
+                if not evidence_ids:
                     warnings.append(
                         f"Task {task.id} finding {index} has no evidence citations."
                     )
+            verified_findings.append(verified_finding)
 
         status = "accepted"
         if uncertain_count and supported_count:
@@ -201,11 +234,14 @@ class EvidenceVerifier:
         elif uncertain_count or not supported_count:
             status = "uncertain"
 
-        return AgentMissionVerifierResult(
-            status=status,
-            supported_finding_count=supported_count,
-            uncertain_finding_count=uncertain_count,
-            warnings=warnings,
+        return (
+            AgentMissionVerifierResult(
+                status=status,
+                supported_finding_count=supported_count,
+                uncertain_finding_count=uncertain_count,
+                warnings=warnings,
+            ),
+            verified_findings,
         )
 
 
@@ -283,10 +319,15 @@ class AgentMissionRuntime:
         trace_events = list(running.trace_events)
         sequence = len(trace_events) + 1
         tool_calls_used = 0
+        started_monotonic = monotonic()
+        timeout_seconds = max(0, int(running.budget.timeout_seconds))
 
-        for task in running.tasks[: running.budget.max_tasks]:
+        selected_tasks = running.tasks[: running.budget.max_tasks]
+        skipped_budget_tasks = running.tasks[running.budget.max_tasks :]
+
+        for task in selected_tasks:
             if tool_calls_used >= running.budget.max_tool_calls:
-                completed_tasks.append(replace(task, status="skipped"))
+                completed_tasks.append(replace(task, status="skipped", steps_used=0))
                 continue
 
             started_at = utc_now()
@@ -296,13 +337,54 @@ class AgentMissionRuntime:
             task_relation_ids: list[str] = []
             errors: list[str] = []
             calls = self._default_tool_calls(task, running, draft)[: task.max_steps]
+            task_trace_count = 0
+            timed_out = False
 
             for tool_name, tool_input in calls:
                 if tool_calls_used >= running.budget.max_tool_calls:
                     break
+                if monotonic() - started_monotonic >= timeout_seconds:
+                    timed_out = True
+                    now = utc_now()
+                    trace_events.append(
+                        AgentTraceEvent(
+                            id=str(uuid4()),
+                            mission_id=running.id,
+                            task_id=task.id,
+                            sequence=sequence,
+                            event_type="error",
+                            tool_name=tool_name,
+                            tool_input=dict(tool_input),
+                            observation_summary="Mission timeout expired before tool execution.",
+                            started_at=now,
+                            completed_at=now,
+                            error="Mission timeout expired.",
+                        )
+                    )
+                    sequence += 1
+                    task_trace_count += 1
+                    break
                 if tool_name not in task.allowed_tools:
+                    now = utc_now()
+                    trace_events.append(
+                        AgentTraceEvent(
+                            id=str(uuid4()),
+                            mission_id=running.id,
+                            task_id=task.id,
+                            sequence=sequence,
+                            event_type="skipped",
+                            tool_name=tool_name,
+                            tool_input=dict(tool_input),
+                            observation_summary="Tool is not allowed for this task.",
+                            started_at=now,
+                            completed_at=now,
+                        )
+                    )
+                    sequence += 1
+                    task_trace_count += 1
                     continue
                 event_started_at = utc_now()
+                tool_calls_used += 1
                 try:
                     result = self.tool_registry.execute(tool_name, tool_input)
                     trace_events.append(
@@ -352,16 +434,18 @@ class AgentMissionRuntime:
                         )
                     )
                 sequence += 1
-                tool_calls_used += 1
+                task_trace_count += 1
 
             status = "complete" if findings else "failed"
+            if timed_out:
+                status = "timeout"
             if errors and findings:
                 status = "partial"
             completed_tasks.append(
                 replace(
                     task,
                     status=status,
-                    steps_used=min(len(calls), task.max_steps),
+                    steps_used=task_trace_count,
                     output_entity_ids=_unique(task_entity_ids),
                     evidence_ids=_unique(task_evidence_ids),
                     findings=findings,
@@ -370,10 +454,22 @@ class AgentMissionRuntime:
                     created_at=task.created_at or started_at,
                 )
             )
+            if timed_out:
+                break
+
+        completed_task_ids = {task.id for task in completed_tasks}
+        for task in selected_tasks:
+            if task.id not in completed_task_ids:
+                completed_tasks.append(replace(task, status="skipped", steps_used=0))
+        completed_tasks.extend(
+            replace(task, status="skipped", steps_used=0)
+            for task in skipped_budget_tasks
+        )
+        final_status = _mission_status(completed_tasks)
 
         completed = replace(
             running,
-            status="complete",
+            status=final_status,
             completed_at=utc_now(),
             tasks=completed_tasks,
             trace_events=trace_events,
@@ -402,6 +498,31 @@ class AgentMissionRuntime:
             if draft.entities
             else None
         )
+        inspect_core_calls = [
+            (
+                "graph_search",
+                {"project_id": project_id, "query": goal_query, "limit": 5},
+            )
+        ]
+        if focus_entity_id:
+            inspect_core_calls.append(
+                (
+                    "inspect_entity",
+                    {"project_id": project_id, "entity_id": focus_entity_id},
+                )
+            )
+        else:
+            inspect_core_calls.append(
+                (
+                    "graph_neighborhood",
+                    {
+                        "project_id": project_id,
+                        "depth": 1,
+                        "node_limit": 20,
+                        "relation_limit": 40,
+                    },
+                )
+            )
 
         calls_by_type: dict[str, list[tuple[str, dict[str, Any]]]] = {
             "find_entry_points": [
@@ -424,22 +545,7 @@ class AgentMissionRuntime:
                     },
                 ),
             ],
-            "inspect_core_entities": [
-                (
-                    "graph_search",
-                    {"project_id": project_id, "query": goal_query, "limit": 5},
-                ),
-                (
-                    "graph_neighborhood",
-                    {
-                        "project_id": project_id,
-                        "focus_entity_id": focus_entity_id,
-                        "depth": 1,
-                        "node_limit": 20,
-                        "relation_limit": 40,
-                    },
-                ),
-            ],
+            "inspect_core_entities": inspect_core_calls,
             "collect_architecture_evidence": [
                 (
                     "graph_neighborhood",
@@ -479,11 +585,14 @@ class AgentMissionRuntime:
         verified_tasks: list[AgentMissionTask] = []
 
         for task in mission.tasks:
-            result = self.verifier.verify_task(task=task, draft=draft)
+            result, findings = self.verifier._verify_task_findings(
+                task=task,
+                draft=draft,
+            )
             supported += result.supported_finding_count
             uncertain += result.uncertain_finding_count
             warnings.extend(result.warnings)
-            verified_tasks.append(task)
+            verified_tasks.append(replace(task, findings=findings))
 
         status = "accepted"
         if uncertain and supported:
@@ -512,16 +621,27 @@ class AgentMissionRuntime:
         evidence_ids = _unique(
             evidence_id
             for finding in findings
-            for evidence_id in _string_values(finding.get("evidence_ids", []))
+            for evidence_id in _string_values(
+                finding.get("supported_evidence_ids", [])
+            )
         )
+        completed_count = sum(1 for task in mission.tasks if task.status == "complete")
+        failed_count = sum(
+            1
+            for task in mission.tasks
+            if task.status in {"failed", "partial", "timeout"}
+        )
+        skipped_count = sum(1 for task in mission.tasks if task.status == "skipped")
         if findings:
             summary = (
-                f"Completed {len(mission.tasks)} task(s) for {mission.goal} with "
+                f"Mission {mission.status}: completed {completed_count}, failed "
+                f"{failed_count}, skipped {skipped_count} task(s) for {mission.goal}; "
                 f"{len(findings)} supported finding(s)."
             )
         else:
             summary = (
-                f"Completed {len(mission.tasks)} task(s) for {mission.goal}; "
+                f"Mission {mission.status}: completed {completed_count}, failed "
+                f"{failed_count}, skipped {skipped_count} task(s) for {mission.goal}; "
                 "findings need additional evidence."
             )
         confidence = 0.8 if findings else 0.35
@@ -546,6 +666,17 @@ def _unique(values: Any) -> list[str]:
         seen.add(value)
         unique.append(value)
     return unique
+
+
+def _mission_status(tasks: list[AgentMissionTask]) -> str:
+    if not tasks:
+        return "failed"
+    completed_count = sum(1 for task in tasks if task.status == "complete")
+    if completed_count == len(tasks):
+        return "complete"
+    if completed_count:
+        return "partial"
+    return "failed"
 
 
 def _seed_entity_ids(draft: ProjectArchiveDraft) -> list[str]:
