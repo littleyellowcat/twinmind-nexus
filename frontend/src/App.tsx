@@ -21,6 +21,7 @@ import {
 import type { CSSProperties, KeyboardEvent, ReactNode } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  fetchAgentMission,
   fetchAgentStatus,
   fetchAgentMissionTrace,
   fetchArchiveDraft,
@@ -1479,6 +1480,8 @@ const missionStatusLabel = (status: string, locale: Locale) => {
 const isMissionTerminal = (mission: { status: string } | null) =>
   Boolean(mission && ["completed", "complete", "partial", "failed", "stopped", "cancelled"].includes(mission.status));
 
+const wait = (delayMs: number) => new Promise<void>((resolve) => window.setTimeout(resolve, delayMs));
+
 const summarizeMissionItems = (items: Record<string, unknown>[], locale: Locale) => {
   if (!items.length) return locale === "zh" ? "无" : "None";
   return items
@@ -2839,6 +2842,7 @@ export function App() {
   const activeMissionIdRef = useRef<string | null>(null);
   const missionActionRef = useRef<MissionAction>(null);
   const missionActionTokenRef = useRef(0);
+  const reactMissionRequestTokenRef = useRef(0);
 
   useEffect(() => {
     activeProjectIdRef.current = archiveDraft?.projectId ?? "";
@@ -2861,9 +2865,11 @@ export function App() {
       setIsLoadingArchive(false);
       setAgentReport(null);
       setHybridRagStatus(null);
+      reactMissionRequestTokenRef.current += 1;
       setReactMission(null);
       setReactTrace([]);
       setReactMissionError("");
+      setIsStartingReactMission(false);
     });
 
     return () => {
@@ -2944,6 +2950,7 @@ export function App() {
     activeMissionIdRef.current = null;
     missionActionTokenRef.current += 1;
     missionActionRef.current = null;
+    reactMissionRequestTokenRef.current += 1;
     setArchiveDraft(draft);
     setAgentReport(report);
     fetchHybridRagStatus(draft.projectId)
@@ -2953,6 +2960,7 @@ export function App() {
     setReactMission(null);
     setReactTrace([]);
     setReactMissionError("");
+    setIsStartingReactMission(false);
     setMissionOverlay(null);
     setMissionError("");
     setMissionAction(null);
@@ -2989,6 +2997,7 @@ export function App() {
     activeMissionIdRef.current = null;
     missionActionTokenRef.current += 1;
     missionActionRef.current = null;
+    reactMissionRequestTokenRef.current += 1;
     setArchiveDraft(null);
     setAgentReport(null);
     setHybridRagStatus(null);
@@ -2996,6 +3005,7 @@ export function App() {
     setReactMission(null);
     setReactTrace([]);
     setReactMissionError("");
+    setIsStartingReactMission(false);
     setMissionOverlay(null);
     setMissionError("");
     setMissionAction(null);
@@ -3109,36 +3119,63 @@ export function App() {
 
   const handleStartReactMission = async () => {
     if (!archiveDraft || isStartingReactMission) return;
+    const projectId = archiveDraft.projectId;
+    const token = reactMissionRequestTokenRef.current + 1;
+    reactMissionRequestTokenRef.current = token;
+    const isCurrentReactRequest = () =>
+      reactMissionRequestTokenRef.current === token && activeProjectIdRef.current === projectId;
     setIsStartingReactMission(true);
     setReactMissionError("");
     try {
-      const nextMission = await startAgentMission(archiveDraft.projectId, {
+      const nextMission = await startAgentMission(projectId, {
         goal: "Understand project architecture with graph-grounded evidence",
         max_tasks: 5,
         max_steps_per_task: 4,
       });
+      if (!isCurrentReactRequest()) return;
       setReactMission(nextMission);
       setReactTrace(nextMission.trace_events);
-      const latestTrace = await fetchAgentMissionTrace(nextMission.id);
-      setReactTrace(latestTrace);
-      notify(locale === "zh" ? "ReAct Agent 任务已完成" : "ReAct Agent mission complete");
+
+      let latestMission = nextMission;
+      for (let attempt = 0; attempt < 10; attempt += 1) {
+        if (attempt > 0) await wait(500);
+        if (!isCurrentReactRequest()) return;
+        const [polledMission, latestTrace] = await Promise.all([
+          fetchAgentMission(nextMission.id),
+          fetchAgentMissionTrace(nextMission.id),
+        ]);
+        if (!isCurrentReactRequest()) return;
+        latestMission = polledMission;
+        setReactMission(polledMission);
+        setReactTrace(latestTrace);
+        if (isMissionTerminal(polledMission)) break;
+      }
+
+      if (!isCurrentReactRequest()) return;
+      if (isMissionTerminal(latestMission)) {
+        notify(locale === "zh" ? "ReAct Agent 任务已完成" : "ReAct Agent mission complete");
+      }
     } catch (error) {
+      if (!isCurrentReactRequest()) return;
       const message = error instanceof Error ? error.message : String(error);
       setReactMissionError(message);
       notify(`${copy[locale].missionError}: ${message}`);
     } finally {
-      setIsStartingReactMission(false);
+      if (isCurrentReactRequest()) setIsStartingReactMission(false);
     }
   };
 
   const handleReactMissionAction = async (action: "pause" | "resume" | "stop") => {
     if (!reactMission) return;
+    const projectId = reactMission.project_id;
     setReactMissionError("");
     try {
       const updated = await updateAgentMissionStatus(reactMission.id, action);
+      if (activeProjectIdRef.current !== projectId) return;
       setReactMission(updated);
       setReactTrace(updated.trace_events);
     } catch (error) {
+      if (activeProjectIdRef.current !== projectId) return;
       const message = error instanceof Error ? error.message : String(error);
       setReactMissionError(message);
     }
