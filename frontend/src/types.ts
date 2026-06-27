@@ -29,6 +29,8 @@ export type ArchiveRelation = {
   target: string;
   type: string;
   hall: string;
+  hallIds?: string[];
+  evidenceIds: string[];
 };
 
 export type EvidenceCard = {
@@ -42,6 +44,7 @@ export type EvidenceCard = {
   lineRange: string;
   confidence: number;
   hall: string;
+  hallIds?: string[];
 };
 
 export type ArchiveDraft = {
@@ -59,6 +62,11 @@ export type AgentReport = {
   question: string;
   summary: string;
   affected_entities: string[];
+  graph_paths?: {
+    nodes: string[];
+    relations: string[];
+    evidence_ids: string[];
+  }[];
   evidence_card_ids: string[];
   risks: string[];
   next_actions: string[];
@@ -69,6 +77,7 @@ export type AgentReport = {
       provider?: string;
       model?: string;
       fallback?: boolean;
+      error?: string;
     };
   };
 };
@@ -92,11 +101,30 @@ export type AgentRoleResult = {
   next_actions: string[];
   confidence: number;
   metadata?: {
+    agent_sdk?: {
+      spec_version?: string;
+      title?: string;
+      mission?: string;
+      depends_on?: string[];
+      tools?: string[];
+      work_log?: {
+        step?: string;
+        detail?: string;
+        tools?: string[];
+      }[];
+      validation?: {
+        status?: string;
+        notes?: string[];
+        missing_dependencies?: string[];
+        missing_outputs?: string[];
+      };
+    };
     llm?: {
       enabled?: boolean;
       provider?: string;
       model?: string;
       fallback?: boolean;
+      error?: string;
     };
   };
 };
@@ -111,6 +139,20 @@ export type ProjectAgentReport = {
   agents: Record<string, AgentRoleResult>;
   errors: string[];
   metrics: MetricSet;
+};
+
+export type HybridRagStatus = {
+  project_id: string;
+  indexed_chunks: number;
+  text_chunks: number;
+  image_chunks: number;
+  dense_provider: string;
+  dense_dimension: number;
+  vision_provider: string;
+  vision_enabled: boolean;
+  fallback_reasons: string[];
+  collection_name?: string;
+  bm25_collection?: string;
 };
 
 export type ArchiveJob = {
@@ -178,6 +220,18 @@ export type GraphNeighborhood = {
   sparse_reason: string | null;
 };
 
+export type GraphSearchResult = {
+  entity_id: string;
+  label: string;
+  type: string;
+  source_path: string | null;
+  hall_ids: string[];
+  evidence_ids: string[];
+  degree: number;
+  score: number;
+  matched_fields: string[];
+};
+
 export type MissionGraphOverlay = {
   mission_id: string;
   explored_node_ids: string[];
@@ -216,4 +270,77 @@ export type AutonomousMission = {
   completed_at: string;
   tasks: MissionTask[];
   graph_overlay: MissionGraphOverlay | null;
+};
+
+export type AgentMissionBudget = {
+  max_tasks: number;
+  max_steps_per_task: number;
+  max_tool_calls: number;
+  timeout_seconds: number;
+};
+
+export type AgentMissionTask = {
+  id: string;
+  mission_id: string;
+  task_type: string;
+  objective: string;
+  status: string;
+  allowed_tools: string[];
+  max_steps: number;
+  steps_used: number;
+  input_entity_ids: string[];
+  output_entity_ids: string[];
+  evidence_ids: string[];
+  findings: Array<Record<string, unknown>>;
+  risks: Array<Record<string, unknown>>;
+  confidence: number;
+  created_at: string;
+  completed_at: string;
+};
+
+export type AgentTraceEvent = {
+  id: string;
+  mission_id: string;
+  task_id: string;
+  sequence: number;
+  event_type: "plan" | "action" | "observation" | "verification" | "final" | string;
+  tool_name?: string | null;
+  tool_input: Record<string, unknown>;
+  observation_summary: string;
+  evidence_ids: string[];
+  entity_ids: string[];
+  relation_ids: string[];
+  started_at: string;
+  completed_at: string;
+  error?: string | null;
+  metadata: Record<string, unknown>;
+};
+
+export type AgentMissionVerifierResult = {
+  status: string;
+  supported_finding_count: number;
+  uncertain_finding_count: number;
+  warnings: string[];
+};
+
+export type AgentMissionFinalReport = {
+  summary: string;
+  findings: Array<Record<string, unknown>>;
+  evidence_ids: string[];
+  confidence: number;
+};
+
+export type AgentMission = {
+  id: string;
+  project_id: string;
+  goal: string;
+  status: string;
+  created_at: string;
+  completed_at: string;
+  budget: AgentMissionBudget;
+  tasks: AgentMissionTask[];
+  trace_events: AgentTraceEvent[];
+  verifier_result?: AgentMissionVerifierResult | null;
+  final_report?: AgentMissionFinalReport | null;
+  metadata: Record<string, unknown>;
 };

@@ -1,7 +1,8 @@
-import { archiveDraft as fallbackArchive } from "./archiveData";
 import type {
+  AgentMission,
   AgentReport,
   AgentStatus,
+  AgentTraceEvent,
   ArchiveJob,
   ArchiveDraft,
   ArchiveHall,
@@ -9,7 +10,9 @@ import type {
   AutonomousMission,
   EvidenceCard,
   GraphNeighborhood,
+  GraphSearchResult,
   GraphSummary,
+  HybridRagStatus,
   MissionGraphOverlay,
   MissionTask,
   ProjectAgentReport,
@@ -62,13 +65,12 @@ type RawEvidenceCard = {
 
 export type ArchiveDraftResult = {
   archiveIds: string[];
-  draft: ArchiveDraft;
-  source: "api" | "fallback";
+  draft: ArchiveDraft | null;
+  source: "api" | "unavailable";
 };
 
 type UploadArchiveJobResult = {
   archive?: RawArchiveDraft;
-  agent_report?: ProjectAgentReport;
 };
 
 type AgentReportJobResult = {
@@ -77,27 +79,15 @@ type AgentReportJobResult = {
 
 export type UploadArchiveResult = {
   draft: ArchiveDraft;
-  agentReport: ProjectAgentReport | null;
 };
 
 export async function fetchArchiveDraft(): Promise<ArchiveDraftResult> {
   try {
     const archiveIds = await listArchiveIds();
-    const projectId =
-      archiveIds.find((id) => id === fallbackArchive.projectId) ??
-      archiveIds[0];
-    if (!projectId) {
-      return { archiveIds: [fallbackArchive.projectId], draft: fallbackArchive, source: "fallback" };
-    }
-
-    return {
-      archiveIds,
-      draft: await fetchProjectArchive(projectId),
-      source: "api",
-    };
+    return { archiveIds, draft: null, source: "api" };
   } catch (error) {
-    console.warn("Using fallback archive data.", error);
-    return { archiveIds: [fallbackArchive.projectId], draft: fallbackArchive, source: "fallback" };
+    console.warn("Archive API is unavailable.", error);
+    return { archiveIds: [], draft: null, source: "unavailable" };
   }
 }
 
@@ -122,13 +112,14 @@ export async function runArchiveQuery(
   projectId: string,
   question: string,
   mode = "evidence_qa",
+  hallId?: string,
 ): Promise<AgentReport> {
   const response = await fetch(`${API_BASE_URL}/api/archives/${encodeURIComponent(projectId)}/query`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ question, mode }),
+    body: JSON.stringify({ question, mode, hall_id: hallId }),
   });
   if (!response.ok) {
     throw new Error(`Archive query failed: ${response.status}`);
@@ -155,6 +146,17 @@ export async function fetchProjectAgentReport(projectId: string): Promise<Projec
   return (await response.json()) as ProjectAgentReport;
 }
 
+export async function fetchHybridRagStatus(projectId: string): Promise<HybridRagStatus | null> {
+  const response = await fetch(`${API_BASE_URL}/api/archives/${encodeURIComponent(projectId)}/rag-status`);
+  if (response.status === 404) {
+    return null;
+  }
+  if (!response.ok) {
+    throw new Error(`Hybrid RAG status failed: ${response.status}`);
+  }
+  return (await response.json()) as HybridRagStatus;
+}
+
 export async function runProjectAgentReport(
   projectId: string,
   scanProfile: string,
@@ -173,7 +175,7 @@ export async function runProjectAgentReport(
 export async function runProjectAgentReportJob(
   projectId: string,
   scanProfile: string,
-  onProgress?: (progress: number, message: string) => void,
+  onProgress?: (progress: number, message: string, projectId?: string | null) => void,
 ): Promise<ProjectAgentReport> {
   const params = new URLSearchParams({ scan_profile: scanProfile });
   const response = await fetch(
@@ -195,7 +197,7 @@ export async function runProjectAgentReportJob(
 export async function uploadProjectArchive(
   file: File,
   scanProfile: string,
-  onProgress?: (progress: number, message: string) => void,
+  onProgress?: (progress: number, message: string, projectId?: string | null) => void,
 ): Promise<UploadArchiveResult> {
   const formData = new FormData();
   formData.append("file", file);
@@ -240,7 +242,6 @@ export async function uploadProjectArchive(
   }
   return {
     draft: transformArchiveDraft(payload.archive),
-    agentReport: payload.agent_report ?? null,
   };
 }
 
@@ -284,6 +285,25 @@ export async function fetchGraphNeighborhood({
     throw new Error(`Graph neighborhood failed: ${response.status}`);
   }
   return (await response.json()) as GraphNeighborhood;
+}
+
+export async function searchGraphEntities(
+  projectId: string,
+  query: string,
+  limit = 20,
+): Promise<GraphSearchResult[]> {
+  const params = new URLSearchParams({
+    q: query,
+    limit: String(limit),
+  });
+  const response = await fetch(
+    `${API_BASE_URL}/api/archives/${encodeURIComponent(projectId)}/graph/search?${params.toString()}`,
+  );
+  if (!response.ok) {
+    throw new Error(`Graph search failed: ${response.status}`);
+  }
+  const payload = (await response.json()) as { results?: GraphSearchResult[] };
+  return payload.results ?? [];
 }
 
 export async function startArchitectureMission(
@@ -344,9 +364,54 @@ export async function updateMissionStatus(
   return (await response.json()) as AutonomousMission;
 }
 
+export async function startAgentMission(
+  projectId: string,
+  payload: { goal: string; max_tasks?: number; max_steps_per_task?: number },
+): Promise<AgentMission> {
+  const response = await fetch(`${API_BASE_URL}/api/archives/${encodeURIComponent(projectId)}/agent-missions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    throw new Error(`Agent mission start failed: ${response.status}`);
+  }
+  return (await response.json()) as AgentMission;
+}
+
+export async function fetchAgentMission(missionId: string): Promise<AgentMission> {
+  const response = await fetch(`${API_BASE_URL}/api/agent-missions/${encodeURIComponent(missionId)}`);
+  if (!response.ok) {
+    throw new Error(`Agent mission fetch failed: ${response.status}`);
+  }
+  return (await response.json()) as AgentMission;
+}
+
+export async function fetchAgentMissionTrace(missionId: string): Promise<AgentTraceEvent[]> {
+  const response = await fetch(`${API_BASE_URL}/api/agent-missions/${encodeURIComponent(missionId)}/trace`);
+  if (!response.ok) {
+    throw new Error(`Agent mission trace failed: ${response.status}`);
+  }
+  const payload = (await response.json()) as { trace_events: AgentTraceEvent[] };
+  return payload.trace_events;
+}
+
+export async function updateAgentMissionStatus(
+  missionId: string,
+  action: "pause" | "resume" | "stop",
+): Promise<AgentMission> {
+  const response = await fetch(`${API_BASE_URL}/api/agent-missions/${encodeURIComponent(missionId)}/${action}`, {
+    method: "POST",
+  });
+  if (!response.ok) {
+    throw new Error(`Agent mission ${action} failed: ${response.status}`);
+  }
+  return (await response.json()) as AgentMission;
+}
+
 export async function pollArchiveJob(
   jobId: string,
-  onProgress?: (progress: number, message: string) => void,
+  onProgress?: (progress: number, message: string, projectId?: string | null) => void,
 ): Promise<ArchiveJob> {
   const startedAt = Date.now();
   while (Date.now() - startedAt < 1000 * 60 * 6) {
@@ -355,7 +420,7 @@ export async function pollArchiveJob(
       throw new Error(`Archive job polling failed: ${response.status}`);
     }
     const job = (await response.json()) as ArchiveJob;
-    onProgress?.(job.progress, job.message);
+    onProgress?.(job.progress, job.message, job.project_id);
     if (job.status === "complete") return job;
     if (job.status === "failed") {
       throw new Error(job.error || job.message || "Archive job failed.");
@@ -374,15 +439,10 @@ function transformArchiveDraft(raw: RawArchiveDraft): ArchiveDraft {
   const relations = raw.relations ?? [];
   const evidenceCards = raw.evidence_cards ?? [];
   const entityById = new Map(entities.map((entity) => [entity.id, entity]));
-  const hallByEntityId = new Map<string, string>();
-  for (const hall of raw.halls ?? []) {
-    for (const entityId of hall.entity_ids ?? []) {
-      hallByEntityId.set(entityId, hall.id);
-    }
-  }
+  const hallIndex = createHallIndex(raw.halls ?? []);
 
   const halls = (raw.halls ?? []).map((hall) =>
-    transformHall(hall, entities, hallByEntityId),
+    transformHall(hall, entities, hallIndex.hallsByEntityId),
   );
 
   return {
@@ -396,21 +456,38 @@ function transformArchiveDraft(raw: RawArchiveDraft): ArchiveDraft {
       evidence: evidenceCards.length,
     },
     halls,
-    relations: relations.slice(0, 80).map((relation) =>
-      transformRelation(relation, entityById, hallByEntityId),
+    relations: relations.map((relation) =>
+      transformRelation(relation, entityById, hallIndex),
     ),
-    evidenceCards: evidenceCards.slice(0, 80).map((card) =>
-      transformEvidenceCard(card, hallByEntityId),
+    evidenceCards: evidenceCards.map((card) =>
+      transformEvidenceCard(card, hallIndex),
     ),
+  };
+}
+
+function createHallIndex(halls: RawHall[]) {
+  const hallsByEntityId = new Map<string, string[]>();
+  for (const hall of halls) {
+    for (const entityId of hall.entity_ids ?? []) {
+      const current = hallsByEntityId.get(entityId) ?? [];
+      current.push(hall.id);
+      hallsByEntityId.set(entityId, current);
+    }
+  }
+
+  return {
+    allHallIds: halls.map((hall) => hall.id),
+    defaultHallId: halls[0]?.id ?? "architecture",
+    hallsByEntityId,
   };
 }
 
 function transformHall(
   hall: RawHall,
   entities: RawEntity[],
-  hallByEntityId: Map<string, string>,
+  hallsByEntityId: Map<string, string[]>,
 ): ArchiveHall {
-  const hallEntities = entities.filter((entity) => hallByEntityId.get(entity.id) === hall.id);
+  const hallEntities = entities.filter((entity) => hallsByEntityId.get(entity.id)?.includes(hall.id));
   const dominantTypes = topCounts(hallEntities.map((entity) => entity.type), 3);
   return {
     id: hall.id,
@@ -429,24 +506,28 @@ function transformHall(
 function transformRelation(
   relation: RawRelation,
   entityById: Map<string, RawEntity>,
-  hallByEntityId: Map<string, string>,
+  hallIndex: ReturnType<typeof createHallIndex>,
 ): ArchiveRelation {
+  const hallIds = relationHallIds(relation, hallIndex);
   return {
     id: relation.id,
     source: displayEntity(entityById.get(relation.source_id), relation.source_id),
     target: displayEntity(entityById.get(relation.target_id), relation.target_id),
     type: relation.type,
-    hall: hallByEntityId.get(relation.source_id) ?? hallByEntityId.get(relation.target_id) ?? "architecture",
+    hall: chooseRelationHall(relation, hallIndex, hallIds),
+    hallIds,
+    evidenceIds: relation.evidence_ids ?? [],
   };
 }
 
 function transformEvidenceCard(
   card: RawEvidenceCard,
-  hallByEntityId: Map<string, string>,
+  hallIndex: ReturnType<typeof createHallIndex>,
 ): EvidenceCard {
-  const hall = card.linked_entities
-    ?.map((entityId) => hallByEntityId.get(entityId))
-    .find((value): value is string => Boolean(value));
+  const candidateHalls = unique(
+    card.linked_entities?.flatMap((entityId) => hallIndex.hallsByEntityId.get(entityId) ?? []) ?? [],
+  );
+  const hall = chooseEvidenceHall(card, candidateHalls, hallIndex);
   return {
     id: card.id,
     title: card.title,
@@ -457,8 +538,112 @@ function transformEvidenceCard(
     snippetZh: translateEvidenceSnippet(card.snippet),
     lineRange: lineRange(card),
     confidence: card.confidence ?? 1,
-    hall: hall ?? "architecture",
+    hall,
+    hallIds: candidateHalls.length ? candidateHalls : [hall],
   };
+}
+
+function relationHallIds(
+  relation: RawRelation,
+  hallIndex: ReturnType<typeof createHallIndex>,
+): string[] {
+  const hallIds = unique([
+    ...(hallIndex.hallsByEntityId.get(relation.source_id) ?? []),
+    ...(hallIndex.hallsByEntityId.get(relation.target_id) ?? []),
+  ]);
+  return hallIds.length ? hallIds : [hallIndex.defaultHallId];
+}
+
+function chooseRelationHall(
+  relation: RawRelation,
+  hallIndex: ReturnType<typeof createHallIndex>,
+  candidateHalls: string[],
+): string {
+  const type = relation.type.toLowerCase();
+  const retrievalHall = findHall(candidateHalls, "retriev");
+  if (retrievalHall) return retrievalHall;
+  if (type.includes("config")) {
+    return (
+      findHall(candidateHalls, "config") ??
+      findHall(hallIndex.allHallIds, "config") ??
+      candidateHalls[0] ??
+      hallIndex.defaultHallId
+    );
+  }
+  if (type.includes("import") || type.includes("depend")) {
+    return (
+      findHall(candidateHalls, "depend") ??
+      findHall(hallIndex.allHallIds, "depend") ??
+      candidateHalls[0] ??
+      hallIndex.defaultHallId
+    );
+  }
+  if (type.includes("mention")) {
+    return (
+      findHall(candidateHalls, "concept") ??
+      findHall(hallIndex.allHallIds, "concept") ??
+      candidateHalls[0] ??
+      hallIndex.defaultHallId
+    );
+  }
+  if (type.includes("retriev")) {
+    return (
+      findHall(candidateHalls, "retriev") ??
+      findHall(hallIndex.allHallIds, "retriev") ??
+      candidateHalls[0] ??
+      hallIndex.defaultHallId
+    );
+  }
+  return candidateHalls[0] ?? hallIndex.defaultHallId;
+}
+
+function chooseEvidenceHall(
+  card: RawEvidenceCard,
+  candidateHalls: string[],
+  hallIndex: ReturnType<typeof createHallIndex>,
+): string {
+  const source = `${card.source_type} ${card.source_path} ${card.title}`.toLowerCase();
+  if (source.includes("config") || source.includes(".yaml") || source.includes(".toml")) {
+    return (
+      findHall(candidateHalls, "config") ??
+      findHall(hallIndex.allHallIds, "config") ??
+      candidateHalls[0] ??
+      hallIndex.defaultHallId
+    );
+  }
+  if (source.includes("retriev") || source.includes("query")) {
+    return (
+      findHall(candidateHalls, "retriev") ??
+      findHall(hallIndex.allHallIds, "retriev") ??
+      candidateHalls[0] ??
+      hallIndex.defaultHallId
+    );
+  }
+  if (source.includes("import") || source.includes("depend")) {
+    return (
+      findHall(candidateHalls, "depend") ??
+      findHall(hallIndex.allHallIds, "depend") ??
+      candidateHalls[0] ??
+      hallIndex.defaultHallId
+    );
+  }
+  if (source.includes("markdown") || source.includes("readme") || source.includes("heading")) {
+    return (
+      findHall(candidateHalls, "concept") ??
+      findHall(hallIndex.allHallIds, "concept") ??
+      candidateHalls[0] ??
+      hallIndex.defaultHallId
+    );
+  }
+  return candidateHalls[0] ?? hallIndex.defaultHallId;
+}
+
+function findHall(hallIds: string[], fragment: string): string | undefined {
+  return hallIds.find((hallId) => hallId.toLowerCase().includes(fragment));
+}
+
+function unique(values: string[]): string[] {
+  return Array.from(new Set(values));
 }
 
 function displayEntity(entity: RawEntity | undefined, fallback = ""): string {
@@ -480,7 +665,7 @@ function languageStats(entities: RawEntity[]) {
   const rows = Array.from(counts, ([name, count]) => ({ name, count })).sort(
     (a, b) => b.count - a.count,
   );
-  return rows.length ? rows.slice(0, 5) : fallbackArchive.languages;
+  return rows.slice(0, 5);
 }
 
 function topCounts(values: string[], limit: number): string[] {
