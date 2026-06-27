@@ -1,0 +1,570 @@
+"""Graph-grounded Agent mission runtime."""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+from uuid import uuid4
+
+from src.libs.llm import BaseLLM
+from src.project_archive.agent_tools import AgentToolRegistry
+from src.project_archive.types import (
+    AgentMission,
+    AgentMissionBudget,
+    AgentMissionFinalReport,
+    AgentMissionTask,
+    AgentMissionVerifierResult,
+    AgentTraceEvent,
+    ProjectArchiveDraft,
+)
+
+DEFAULT_AGENT_GOAL = "Understand project architecture"
+
+
+@dataclass(frozen=True)
+class _TaskTemplate:
+    task_type: str
+    objective: str
+    allowed_tools: list[str]
+
+
+TASK_TEMPLATES = [
+    _TaskTemplate(
+        task_type="find_entry_points",
+        objective="Find likely entry points and high-signal graph starts.",
+        allowed_tools=["graph_summary", "list_halls", "graph_search"],
+    ),
+    _TaskTemplate(
+        task_type="map_archive_halls",
+        objective="Map archive halls and their surrounding graph neighborhoods.",
+        allowed_tools=["list_halls", "graph_neighborhood"],
+    ),
+    _TaskTemplate(
+        task_type="inspect_core_entities",
+        objective="Inspect core entities related to the mission goal.",
+        allowed_tools=["graph_search", "inspect_entity", "graph_neighborhood"],
+    ),
+    _TaskTemplate(
+        task_type="collect_architecture_evidence",
+        objective="Collect evidence cards for architecture claims.",
+        allowed_tools=["graph_neighborhood", "get_evidence"],
+    ),
+    _TaskTemplate(
+        task_type="summarize_architecture",
+        objective="Summarize graph-grounded architecture findings.",
+        allowed_tools=["graph_summary", "get_evidence"],
+    ),
+]
+
+
+def utc_now() -> str:
+    return datetime.now(UTC).isoformat()
+
+
+def plan_agent_mission(
+    draft: ProjectArchiveDraft,
+    goal: str,
+    max_tasks: int = 5,
+    max_steps_per_task: int = 4,
+    max_tool_calls: int = 16,
+) -> AgentMission:
+    mission_id = str(uuid4())
+    effective_max_tasks = max(0, int(max_tasks))
+    effective_max_steps = max(1, int(max_steps_per_task))
+    effective_max_tool_calls = max(1, int(max_tool_calls))
+    selected_templates = TASK_TEMPLATES[:effective_max_tasks]
+    created_at = utc_now()
+    seed_entity_ids = _seed_entity_ids(draft)
+
+    tasks = [
+        AgentMissionTask(
+            id=f"{mission_id}:task:{index}",
+            mission_id=mission_id,
+            task_type=template.task_type,
+            objective=template.objective,
+            status="pending",
+            allowed_tools=list(template.allowed_tools),
+            max_steps=effective_max_steps,
+            input_entity_ids=seed_entity_ids[:3],
+            created_at=created_at,
+        )
+        for index, template in enumerate(selected_templates, start=1)
+    ]
+
+    return AgentMission(
+        id=mission_id,
+        project_id=draft.project_id,
+        goal=goal.strip() or DEFAULT_AGENT_GOAL,
+        status="planned",
+        created_at=created_at,
+        budget=AgentMissionBudget(
+            max_tasks=effective_max_tasks,
+            max_steps_per_task=effective_max_steps,
+            max_tool_calls=effective_max_tool_calls,
+        ),
+        tasks=tasks,
+        metadata={
+            "draft_metrics": {
+                "halls": len(draft.halls),
+                "entities": len(draft.entities),
+                "relations": len(draft.relations),
+                "evidence": len(draft.evidence_cards),
+            }
+        },
+    )
+
+
+class MissionStore:
+    def __init__(self, storage_dir: str | Path) -> None:
+        self.storage_dir = Path(storage_dir)
+
+    def save(self, mission: AgentMission) -> AgentMission:
+        path = self._mission_path(mission.project_id, mission.id)
+        path.write_text(
+            json.dumps(mission.to_dict(), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        return mission
+
+    def load(self, mission_id: str) -> AgentMission:
+        self._validate_mission_id(mission_id)
+        for path in self.storage_dir.glob(f"*/agent_missions/{mission_id}.json"):
+            return AgentMission.from_dict(json.loads(path.read_text(encoding="utf-8")))
+        raise ValueError(f"Agent mission not found: {mission_id}")
+
+    def update_status(self, mission_id: str, status: str) -> AgentMission:
+        mission = self.load(mission_id)
+        completed_at = mission.completed_at
+        if status in {"complete", "failed", "cancelled"} and not completed_at:
+            completed_at = utc_now()
+        updated = replace(mission, status=status, completed_at=completed_at)
+        return self.save(updated)
+
+    def _mission_path(self, project_id: str, mission_id: str) -> Path:
+        self._validate_mission_id(mission_id)
+        mission_dir = (
+            self.storage_dir / _safe_project_id(project_id) / "agent_missions"
+        )
+        mission_dir.mkdir(parents=True, exist_ok=True)
+        return mission_dir / f"{mission_id}.json"
+
+    def _validate_mission_id(self, mission_id: str) -> None:
+        if not isinstance(mission_id, str) or not mission_id:
+            raise ValueError("Agent mission id must be a non-empty string.")
+        if any(char in mission_id for char in ("/", "\\")):
+            raise ValueError(f"Invalid agent mission id: {mission_id}")
+
+
+class EvidenceVerifier:
+    def verify_task(
+        self,
+        task: AgentMissionTask,
+        draft: ProjectArchiveDraft,
+    ) -> AgentMissionVerifierResult:
+        valid_evidence_ids = {card.id for card in draft.evidence_cards}
+        supported_count = 0
+        uncertain_count = 0
+        warnings: list[str] = []
+
+        if not task.findings:
+            warnings.append(f"Task {task.id} produced no findings.")
+
+        for index, finding in enumerate(task.findings, start=1):
+            evidence_ids = _string_values(finding.get("evidence_ids", []))
+            supported_evidence_ids = [
+                evidence_id
+                for evidence_id in evidence_ids
+                if evidence_id in valid_evidence_ids
+            ]
+            if supported_evidence_ids:
+                supported_count += 1
+                finding["verification_status"] = "supported"
+                finding["supported_evidence_ids"] = supported_evidence_ids
+            else:
+                uncertain_count += 1
+                finding["verification_status"] = "uncertain"
+                if evidence_ids:
+                    warnings.append(
+                        f"Task {task.id} finding {index} cites unknown evidence."
+                    )
+                else:
+                    warnings.append(
+                        f"Task {task.id} finding {index} has no evidence citations."
+                    )
+
+        status = "accepted"
+        if uncertain_count and supported_count:
+            status = "partial"
+        elif uncertain_count or not supported_count:
+            status = "uncertain"
+
+        return AgentMissionVerifierResult(
+            status=status,
+            supported_finding_count=supported_count,
+            uncertain_finding_count=uncertain_count,
+            warnings=warnings,
+        )
+
+
+class AgentMissionRuntime:
+    def __init__(
+        self,
+        service: Any,
+        store: MissionStore,
+        tool_registry: AgentToolRegistry,
+        llm: BaseLLM | None = None,
+    ) -> None:
+        self.service = service
+        self.store = store
+        self.tool_registry = tool_registry
+        self.llm = llm
+        self.verifier = EvidenceVerifier()
+
+    def create(
+        self,
+        draft: ProjectArchiveDraft,
+        goal: str,
+        max_tasks: int = 5,
+        max_steps_per_task: int = 4,
+    ) -> AgentMission:
+        mission = plan_agent_mission(
+            draft=draft,
+            goal=goal,
+            max_tasks=max_tasks,
+            max_steps_per_task=max_steps_per_task,
+        )
+        return self.store.save(mission)
+
+    def start(
+        self,
+        project_id: str,
+        goal: str,
+        max_tasks: int = 5,
+        max_steps_per_task: int = 4,
+    ) -> AgentMission:
+        draft = self.service.load_draft(project_id)
+        mission = self.create(
+            draft=draft,
+            goal=goal,
+            max_tasks=max_tasks,
+            max_steps_per_task=max_steps_per_task,
+        )
+        return self._run_to_completion(mission, draft)
+
+    def run(self, mission_id: str) -> AgentMission:
+        mission = self.load(mission_id)
+        draft = self.service.load_draft(mission.project_id)
+        return self._run_to_completion(mission, draft)
+
+    def load(self, mission_id: str) -> AgentMission:
+        return self.store.load(mission_id)
+
+    def trace(self, mission_id: str) -> list[AgentTraceEvent]:
+        return self.load(mission_id).trace_events
+
+    def update_status(self, mission_id: str, status: str) -> AgentMission:
+        return self.store.update_status(mission_id, status)
+
+    def _run_to_completion(
+        self,
+        mission: AgentMission,
+        draft: ProjectArchiveDraft,
+    ) -> AgentMission:
+        if mission.status == "complete":
+            return mission
+
+        running = replace(mission, status="running")
+        self.store.save(running)
+
+        completed_tasks: list[AgentMissionTask] = []
+        trace_events = list(running.trace_events)
+        sequence = len(trace_events) + 1
+        tool_calls_used = 0
+
+        for task in running.tasks[: running.budget.max_tasks]:
+            if tool_calls_used >= running.budget.max_tool_calls:
+                completed_tasks.append(replace(task, status="skipped"))
+                continue
+
+            started_at = utc_now()
+            findings: list[dict[str, Any]] = []
+            task_evidence_ids: list[str] = []
+            task_entity_ids: list[str] = []
+            task_relation_ids: list[str] = []
+            errors: list[str] = []
+            calls = self._default_tool_calls(task, running, draft)[: task.max_steps]
+
+            for tool_name, tool_input in calls:
+                if tool_calls_used >= running.budget.max_tool_calls:
+                    break
+                if tool_name not in task.allowed_tools:
+                    continue
+                event_started_at = utc_now()
+                try:
+                    result = self.tool_registry.execute(tool_name, tool_input)
+                    trace_events.append(
+                        AgentTraceEvent(
+                            id=str(uuid4()),
+                            mission_id=running.id,
+                            task_id=task.id,
+                            sequence=sequence,
+                            event_type="action",
+                            tool_name=tool_name,
+                            tool_input=dict(tool_input),
+                            observation_summary=result.summary,
+                            evidence_ids=list(result.evidence_ids),
+                            entity_ids=list(result.entity_ids),
+                            relation_ids=list(result.relation_ids),
+                            started_at=event_started_at,
+                            completed_at=utc_now(),
+                        )
+                    )
+                    findings.append(
+                        {
+                            "summary": result.summary,
+                            "tool_name": tool_name,
+                            "evidence_ids": list(result.evidence_ids),
+                            "entity_ids": list(result.entity_ids),
+                            "relation_ids": list(result.relation_ids),
+                        }
+                    )
+                    task_evidence_ids.extend(result.evidence_ids)
+                    task_entity_ids.extend(result.entity_ids)
+                    task_relation_ids.extend(result.relation_ids)
+                except Exception as exc:  # pragma: no cover - defensive trace path.
+                    errors.append(str(exc))
+                    trace_events.append(
+                        AgentTraceEvent(
+                            id=str(uuid4()),
+                            mission_id=running.id,
+                            task_id=task.id,
+                            sequence=sequence,
+                            event_type="error",
+                            tool_name=tool_name,
+                            tool_input=dict(tool_input),
+                            observation_summary="Tool execution failed.",
+                            started_at=event_started_at,
+                            completed_at=utc_now(),
+                            error=str(exc),
+                        )
+                    )
+                sequence += 1
+                tool_calls_used += 1
+
+            status = "complete" if findings else "failed"
+            if errors and findings:
+                status = "partial"
+            completed_tasks.append(
+                replace(
+                    task,
+                    status=status,
+                    steps_used=min(len(calls), task.max_steps),
+                    output_entity_ids=_unique(task_entity_ids),
+                    evidence_ids=_unique(task_evidence_ids),
+                    findings=findings,
+                    confidence=0.8 if task_evidence_ids else 0.45,
+                    completed_at=utc_now(),
+                    created_at=task.created_at or started_at,
+                )
+            )
+
+        completed = replace(
+            running,
+            status="complete",
+            completed_at=utc_now(),
+            tasks=completed_tasks,
+            trace_events=trace_events,
+        )
+        verified = self._verify_mission(completed, draft)
+        final = replace(verified, final_report=self._final_report(verified))
+        return self.store.save(final)
+
+    def _default_tool_calls(
+        self,
+        task: AgentMissionTask,
+        mission: AgentMission,
+        draft: ProjectArchiveDraft,
+    ) -> list[tuple[str, dict[str, Any]]]:
+        project_id = mission.project_id
+        goal_query = mission.goal or DEFAULT_AGENT_GOAL
+        evidence_ids = _unique(
+            evidence_id
+            for entity in draft.entities[:4]
+            for evidence_id in entity.evidence_ids
+        )
+        focus_entity_id = (
+            task.input_entity_ids[0]
+            if task.input_entity_ids
+            else draft.entities[0].id
+            if draft.entities
+            else None
+        )
+
+        calls_by_type: dict[str, list[tuple[str, dict[str, Any]]]] = {
+            "find_entry_points": [
+                ("graph_summary", {"project_id": project_id}),
+                ("list_halls", {"project_id": project_id}),
+                (
+                    "graph_search",
+                    {"project_id": project_id, "query": goal_query, "limit": 5},
+                ),
+            ],
+            "map_archive_halls": [
+                ("list_halls", {"project_id": project_id}),
+                (
+                    "graph_neighborhood",
+                    {
+                        "project_id": project_id,
+                        "depth": 1,
+                        "node_limit": 20,
+                        "relation_limit": 40,
+                    },
+                ),
+            ],
+            "inspect_core_entities": [
+                (
+                    "graph_search",
+                    {"project_id": project_id, "query": goal_query, "limit": 5},
+                ),
+                (
+                    "graph_neighborhood",
+                    {
+                        "project_id": project_id,
+                        "focus_entity_id": focus_entity_id,
+                        "depth": 1,
+                        "node_limit": 20,
+                        "relation_limit": 40,
+                    },
+                ),
+            ],
+            "collect_architecture_evidence": [
+                (
+                    "graph_neighborhood",
+                    {
+                        "project_id": project_id,
+                        "depth": 1,
+                        "node_limit": 20,
+                        "relation_limit": 40,
+                    },
+                ),
+                (
+                    "get_evidence",
+                    {"project_id": project_id, "evidence_ids": evidence_ids[:10]},
+                ),
+            ],
+            "summarize_architecture": [
+                ("graph_summary", {"project_id": project_id}),
+                (
+                    "get_evidence",
+                    {"project_id": project_id, "evidence_ids": evidence_ids[:10]},
+                ),
+            ],
+        }
+        return calls_by_type.get(
+            task.task_type,
+            [("graph_summary", {"project_id": project_id})],
+        )
+
+    def _verify_mission(
+        self,
+        mission: AgentMission,
+        draft: ProjectArchiveDraft,
+    ) -> AgentMission:
+        supported = 0
+        uncertain = 0
+        warnings: list[str] = []
+        verified_tasks: list[AgentMissionTask] = []
+
+        for task in mission.tasks:
+            result = self.verifier.verify_task(task=task, draft=draft)
+            supported += result.supported_finding_count
+            uncertain += result.uncertain_finding_count
+            warnings.extend(result.warnings)
+            verified_tasks.append(task)
+
+        status = "accepted"
+        if uncertain and supported:
+            status = "partial"
+        elif uncertain or not supported:
+            status = "uncertain"
+
+        return replace(
+            mission,
+            tasks=verified_tasks,
+            verifier_result=AgentMissionVerifierResult(
+                status=status,
+                supported_finding_count=supported,
+                uncertain_finding_count=uncertain,
+                warnings=warnings,
+            ),
+        )
+
+    def _final_report(self, mission: AgentMission) -> AgentMissionFinalReport:
+        findings = [
+            finding
+            for task in mission.tasks
+            for finding in task.findings
+            if finding.get("verification_status") == "supported"
+        ]
+        evidence_ids = _unique(
+            evidence_id
+            for finding in findings
+            for evidence_id in _string_values(finding.get("evidence_ids", []))
+        )
+        if findings:
+            summary = (
+                f"Completed {len(mission.tasks)} task(s) for {mission.goal} with "
+                f"{len(findings)} supported finding(s)."
+            )
+        else:
+            summary = (
+                f"Completed {len(mission.tasks)} task(s) for {mission.goal}; "
+                "findings need additional evidence."
+            )
+        confidence = 0.8 if findings else 0.35
+        if mission.verifier_result and mission.verifier_result.status == "partial":
+            confidence = 0.6
+        return AgentMissionFinalReport(
+            summary=summary,
+            findings=findings,
+            evidence_ids=evidence_ids,
+            confidence=confidence,
+        )
+
+
+def _unique(values: Any) -> list[str]:
+    unique: list[str] = []
+    seen: set[str] = set()
+    for value in values or []:
+        if not isinstance(value, str) or not value:
+            continue
+        if value in seen:
+            continue
+        seen.add(value)
+        unique.append(value)
+    return unique
+
+
+def _seed_entity_ids(draft: ProjectArchiveDraft) -> list[str]:
+    hall_entity_ids = [
+        entity_id for hall in draft.halls for entity_id in hall.entity_ids
+    ]
+    entity_ids = [entity.id for entity in draft.entities]
+    return _unique([*hall_entity_ids, *entity_ids])
+
+
+def _safe_project_id(project_id: str) -> str:
+    safe = [
+        char if char.isalnum() or char in {"-", "_", "."} else "_"
+        for char in project_id
+    ]
+    return "".join(safe).strip("._") or "project"
+
+
+def _string_values(values: Any) -> list[str]:
+    if not isinstance(values, list):
+        return []
+    return [value for value in values if isinstance(value, str) and value]
