@@ -1,4 +1,5 @@
 from dataclasses import replace
+import json
 
 import pytest
 
@@ -86,6 +87,7 @@ from src.project_archive.agent_mission import (
     plan_agent_mission,
 )
 from src.project_archive.agent_tools import AgentToolRegistry
+from src.project_archive.service import ProjectArchiveService
 from src.project_archive.types import (
     ArchiveHall,
     EvidenceCard,
@@ -663,3 +665,31 @@ def test_runtime_falls_back_when_llm_raises_without_leaking_message(tmp_path):
     assert metadata["fallback_reason"] == "llm_exception"
     assert metadata["error_type"] == "RuntimeError"
     assert "secret-token-123" not in str(metadata)
+
+
+def test_service_starts_loads_traces_and_updates_agent_mission(tmp_path):
+    service = ProjectArchiveService(storage_dir=tmp_path)
+    archive_dir = tmp_path / "demo"
+    archive_dir.mkdir()
+    draft = RuntimeFakeService(tmp_path).draft
+    (archive_dir / "draft_archive.json").write_text(
+        json.dumps(draft.to_dict()),
+        encoding="utf-8",
+    )
+
+    planned = service.create_agent_mission(
+        project_id="demo",
+        goal="Understand architecture",
+        max_tasks=2,
+        max_steps_per_task=2,
+    )
+    mission = service.run_agent_mission(planned.id)
+    loaded = service.load_agent_mission(mission.id)
+    trace = service.agent_mission_trace(mission.id)
+    stopped = service.update_agent_mission_status(mission.id, "stopped")
+
+    assert planned.status == "planned"
+    assert loaded.id == mission.id
+    assert trace
+    assert stopped.status == "stopped"
+    assert (tmp_path / "demo" / "agent_missions" / f"{mission.id}.json").exists()

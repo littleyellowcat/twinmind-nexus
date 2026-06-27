@@ -13,25 +13,35 @@ from src.project_archive.autonomous_mission import (
     ARCHITECTURE_GOAL,
     run_architecture_mission,
 )
+from src.project_archive.agent_mission import AgentMissionRuntime, MissionStore
+from src.project_archive.agent_tools import AgentToolRegistry
 from src.project_archive.graph_explorer import (
     build_graph_neighborhood,
     build_graph_summary,
+    search_graph_entities,
 )
 from src.project_archive.graph_store import create_graph_store
+from src.project_archive.hybrid_rag import (
+    ProjectHybridRAGIndex,
+    retrieval_results_to_evidence_cards,
+)
 from src.project_archive.llm import create_archive_llm_enhancer_from_config
 from src.project_archive.multi_agent import MultiAgentPipeline
 from src.project_archive.scanner import SCAN_PROFILE_ARCHITECTURE
 from src.project_archive.types import (
+    AgentMission,
     AgentResult,
+    AgentTraceEvent,
     AutonomousMission,
     GraphNeighborhood,
+    GraphSearchResult,
     GraphSummary,
     ProjectAgentReport,
     ProjectArchiveDraft,
     QueryMode,
 )
 
-MISSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
+MISSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_:-]{0,127}$")
 
 
 class ProjectArchiveService:
@@ -62,11 +72,43 @@ class ProjectArchiveService:
             project_id=project_id,
             scan_profile=scan_profile,
         )
+        try:
+            rag_result = ProjectHybridRAGIndex(self.storage_dir).build(
+                project_root=project_root,
+                draft=draft,
+            )
+            if rag_result.image_evidence_cards:
+                draft = replace(
+                    draft,
+                    evidence_cards=[
+                        *draft.evidence_cards,
+                        *rag_result.image_evidence_cards,
+                    ],
+                    confirmation_items=[
+                        *draft.confirmation_items,
+                        (
+                            "Hybrid RAG indexed "
+                            f"{rag_result.indexed_chunks} chunks with "
+                            f"{rag_result.image_chunks} image chunk(s)."
+                        ),
+                    ],
+                )
+        except Exception as exc:
+            draft = replace(
+                draft,
+                confirmation_items=[
+                    *draft.confirmation_items,
+                    f"Hybrid RAG indexing failed: {exc}",
+                ],
+            )
 
         self._draft_path(project_id).write_text(
             json.dumps(draft.to_dict(), ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
+        agent_report_path = self._agent_report_path(project_id)
+        if agent_report_path.exists():
+            agent_report_path.unlink()
         return draft
 
     def run_agent_report(
@@ -86,16 +128,70 @@ class ProjectArchiveService:
         return report
 
     def query_project(
-        self, project_id: str, question: str, mode: QueryMode
+        self,
+        project_id: str,
+        question: str,
+        mode: QueryMode,
+        hall_id: str | None = None,
     ) -> AgentResult:
         draft = self.load_draft(project_id)
+        entities = draft.entities
+        relations = draft.relations
+        evidence_cards = draft.evidence_cards
+        scoped_question = question
+        rag_metadata: dict | None = None
+
+        if hall_id:
+            hall = next((item for item in draft.halls if item.id == hall_id), None)
+            if hall is None:
+                raise ValueError(f"Archive hall not found: {hall_id}")
+            entities, relations, evidence_cards = _scope_archive_to_hall(draft, hall_id)
+            scoped_question = (
+                f"{question}\n\n"
+                f"Selected archive hall: {hall.name}\n"
+                f"Hall description: {hall.description}\n"
+                "Use the scoped hall entities, relations, and evidence as the primary context. "
+                "Do not treat the hall display label itself as a required source-code term."
+            )
+
+        rag_result = None
+        try:
+            rag_result = ProjectHybridRAGIndex(self.storage_dir).search(
+                project_id=project_id,
+                query=question,
+                hall_id=hall_id,
+                top_k=8,
+            )
+        except Exception as exc:
+            rag_metadata = {"enabled": True, "error": str(exc), "result_count": 0}
+
+        if rag_result is not None:
+            rag_cards = retrieval_results_to_evidence_cards(rag_result.results)
+            if rag_cards:
+                evidence_cards = [*rag_cards, *evidence_cards]
+                scoped_question = (
+                    f"{scoped_question}\n\n"
+                    "Hybrid RAG retrieved context has been prepended to evidence cards. "
+                    "Prefer these retrieved chunks when they directly answer the question."
+                )
+            rag_metadata = rag_result.to_metadata()
+
         workflow = AgentWorkflow(
-            entities=draft.entities,
-            relations=draft.relations,
-            evidence_cards=draft.evidence_cards,
+            entities=entities,
+            relations=relations,
+            evidence_cards=evidence_cards,
             enhancer=create_archive_llm_enhancer_from_config(),
         )
-        return workflow.run(question=question, mode=mode)
+        result = workflow.run(question=scoped_question, mode=mode)
+        if rag_metadata is None:
+            return result
+        return replace(
+            result,
+            metadata={
+                **result.metadata,
+                "hybrid_rag": rag_metadata,
+            },
+        )
 
     def agent_status(self) -> dict[str, str | bool | None]:
         enhancer = create_archive_llm_enhancer_from_config()
@@ -165,6 +261,22 @@ class ProjectArchiveService:
             relation_limit=relation_limit,
         )
 
+    def search_graph_entities(
+        self,
+        project_id: str,
+        *,
+        query: str,
+        limit: int = 20,
+    ) -> list[GraphSearchResult]:
+        draft = self.load_draft(project_id)
+        return search_graph_entities(draft, query=query, limit=limit)
+
+    def hybrid_rag_status(self, project_id: str) -> dict:
+        status = ProjectHybridRAGIndex(self.storage_dir).load_status(project_id)
+        if status is None:
+            raise ValueError(f"Hybrid RAG index not found: {project_id}")
+        return status
+
     def start_architecture_mission(
         self,
         project_id: str,
@@ -200,6 +312,63 @@ class ProjectArchiveService:
         )
         return updated
 
+    def create_agent_mission(
+        self,
+        project_id: str,
+        *,
+        goal: str,
+        max_tasks: int = 5,
+        max_steps_per_task: int = 4,
+    ) -> AgentMission:
+        draft = self.load_draft(project_id)
+        runtime = self._agent_mission_runtime()
+        mission = runtime.create(
+            draft=draft,
+            goal=goal,
+            max_tasks=max_tasks,
+            max_steps_per_task=max_steps_per_task,
+        )
+        return runtime.store.save(mission)
+
+    def run_agent_mission(self, mission_id: str) -> AgentMission:
+        self._validate_mission_id(mission_id)
+        return self._agent_mission_runtime().run(mission_id)
+
+    def start_agent_mission(
+        self,
+        project_id: str,
+        *,
+        goal: str,
+        max_tasks: int = 5,
+        max_steps_per_task: int = 4,
+    ) -> AgentMission:
+        planned = self.create_agent_mission(
+            project_id=project_id,
+            goal=goal,
+            max_tasks=max_tasks,
+            max_steps_per_task=max_steps_per_task,
+        )
+        return self.run_agent_mission(planned.id)
+
+    def load_agent_mission(self, mission_id: str) -> AgentMission:
+        self._validate_mission_id(mission_id)
+        return self._agent_mission_runtime().load(mission_id)
+
+    def agent_mission_trace(self, mission_id: str) -> list[AgentTraceEvent]:
+        self._validate_mission_id(mission_id)
+        return self._agent_mission_runtime().trace(mission_id)
+
+    def update_agent_mission_status(self, mission_id: str, status: str) -> AgentMission:
+        self._validate_mission_id(mission_id)
+        return self._agent_mission_runtime().update_status(mission_id, status)
+
+    def _agent_mission_runtime(self) -> AgentMissionRuntime:
+        return AgentMissionRuntime(
+            service=self,
+            store=MissionStore(self.storage_dir),
+            tool_registry=AgentToolRegistry(self),
+        )
+
     def _project_dir(self, project_id: str) -> Path:
         safe_project_id = project_id.replace("/", "_").replace(" ", "_")
         path = self.storage_dir / safe_project_id
@@ -226,3 +395,50 @@ class ProjectArchiveService:
         if self.graph_provider.lower() == "kuzu":
             return self._project_dir(project_id) / "graph.kuzu"
         return self._project_dir(project_id) / "graph.sqlite"
+
+
+def _scope_archive_to_hall(
+    draft: ProjectArchiveDraft,
+    hall_id: str,
+) -> tuple[list, list, list]:
+    hall = next(item for item in draft.halls if item.id == hall_id)
+    hall_entity_ids = set(hall.entity_ids)
+    relation_ids = set()
+    related_entity_ids = set(hall_entity_ids)
+    evidence_ids = set()
+
+    for relation in draft.relations:
+        touches_hall = (
+            relation.source_id in hall_entity_ids
+            or relation.target_id in hall_entity_ids
+        )
+        if not touches_hall:
+            continue
+        relation_ids.add(relation.id)
+        related_entity_ids.add(relation.source_id)
+        related_entity_ids.add(relation.target_id)
+        evidence_ids.update(relation.evidence_ids)
+
+    for entity in draft.entities:
+        if entity.id in hall_entity_ids:
+            evidence_ids.update(entity.evidence_ids)
+
+    for card in draft.evidence_cards:
+        if any(entity_id in hall_entity_ids for entity_id in card.linked_entities):
+            evidence_ids.add(card.id)
+
+    scoped_entities = [
+        entity for entity in draft.entities if entity.id in related_entity_ids
+    ]
+    scoped_relations = [
+        relation for relation in draft.relations if relation.id in relation_ids
+    ]
+    scoped_evidence = [
+        card for card in draft.evidence_cards if card.id in evidence_ids
+    ]
+
+    return (
+        scoped_entities or draft.entities,
+        scoped_relations,
+        scoped_evidence or draft.evidence_cards[:3],
+    )
