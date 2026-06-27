@@ -160,18 +160,38 @@ def _reject_json_constant(value: str) -> None:
     raise ValueError(f"Invalid JSON constant: {value}")
 
 
-def _validate_llm_tool_input(tool_name: str, tool_input: dict[str, Any]) -> str | None:
+def _validate_llm_tool_input(
+    tool_name: str,
+    tool_input: dict[str, Any],
+    project_id: str,
+) -> str | None:
     project_id_error = _validate_required_str(tool_input, "project_id")
     if project_id_error:
         return project_id_error
+    if tool_input["project_id"].strip() != project_id:
+        return "invalid_project_id"
 
     if tool_name in {"graph_summary", "list_halls"}:
         return None
-    if tool_name in {"graph_search", "hybrid_search"}:
-        return _validate_required_str(tool_input, "query")
+    if tool_name == "graph_search":
+        query_error = _validate_required_str(tool_input, "query")
+        if query_error:
+            return query_error
+        if "limit" in tool_input and not _is_positive_int_like(tool_input["limit"]):
+            return "invalid_limit"
+        return None
+    if tool_name == "hybrid_search":
+        query_error = _validate_required_str(tool_input, "query")
+        if query_error:
+            return query_error
+        if "top_k" in tool_input and not _is_positive_int_like(tool_input["top_k"]):
+            return "invalid_top_k"
+        if "hall_id" in tool_input and not isinstance(tool_input["hall_id"], str):
+            return "invalid_hall_id"
+        return None
     if tool_name == "graph_neighborhood":
         for key in ("hall_id", "focus_entity_id"):
-            if key in tool_input and not _is_optional_str(tool_input[key]):
+            if key in tool_input and not isinstance(tool_input[key], str):
                 return f"invalid_{key}"
         for key in ("depth", "node_limit", "relation_limit"):
             if key in tool_input and not _is_positive_int_like(tool_input[key]):
@@ -211,10 +231,6 @@ def _validate_required_str(tool_input: dict[str, Any], key: str) -> str | None:
     if not isinstance(value, str) or not value.strip():
         return f"missing_{key}"
     return None
-
-
-def _is_optional_str(value: Any) -> bool:
-    return value is None or isinstance(value, str)
 
 
 def _is_positive_int_like(value: Any) -> bool:
@@ -871,7 +887,11 @@ class AgentMissionRuntime:
 
         selected_input = dict(tool_input)
         selected_input.setdefault("project_id", mission.project_id)
-        input_error = _validate_llm_tool_input(tool_name, selected_input)
+        input_error = _validate_llm_tool_input(
+            tool_name,
+            selected_input,
+            mission.project_id,
+        )
         if input_error:
             return (
                 default_tool_name,

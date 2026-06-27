@@ -553,6 +553,66 @@ def test_runtime_falls_back_when_llm_selected_tool_input_is_invalid(tmp_path):
     assert mission.trace_events[0].metadata["error_type"] == "missing_query"
 
 
+def test_runtime_falls_back_when_llm_selected_optional_input_is_invalid(tmp_path):
+    service = RuntimeFakeService(tmp_path)
+    llm = FakeActionLLM(
+        '{"thought_summary":"Search with bad limit",'
+        '"action":{"tool":"graph_search",'
+        '"input":{"project_id":"demo","query":"architecture","limit":false}},'
+        '"stop":false}'
+    )
+    runtime = AgentMissionRuntime(
+        service=service,
+        store=MissionStore(tmp_path),
+        tool_registry=AgentToolRegistry(service),
+        llm=llm,
+    )
+
+    mission = runtime.start(
+        project_id="demo",
+        goal="Understand architecture",
+        max_tasks=1,
+        max_steps_per_task=1,
+    )
+
+    assert mission.status == "complete"
+    assert mission.trace_events[0].event_type == "action"
+    assert mission.trace_events[0].tool_name == "graph_summary"
+    assert mission.trace_events[0].metadata["llm_fallback"] is True
+    assert mission.trace_events[0].metadata["fallback_reason"] == "invalid_tool_input"
+    assert mission.trace_events[0].metadata["error_type"] == "invalid_limit"
+
+
+def test_runtime_falls_back_when_llm_project_id_does_not_match_mission(tmp_path):
+    service = RuntimeFakeService(tmp_path)
+    llm = FakeActionLLM(
+        '{"thought_summary":"Use another project",'
+        '"action":{"tool":"graph_summary","input":{"project_id":"other"}},'
+        '"stop":false}'
+    )
+    runtime = AgentMissionRuntime(
+        service=service,
+        store=MissionStore(tmp_path),
+        tool_registry=AgentToolRegistry(service),
+        llm=llm,
+    )
+
+    mission = runtime.start(
+        project_id="demo",
+        goal="Understand architecture",
+        max_tasks=1,
+        max_steps_per_task=1,
+    )
+
+    assert mission.status == "complete"
+    assert mission.trace_events[0].event_type == "action"
+    assert mission.trace_events[0].tool_name == "graph_summary"
+    assert mission.trace_events[0].tool_input["project_id"] == "demo"
+    assert mission.trace_events[0].metadata["llm_fallback"] is True
+    assert mission.trace_events[0].metadata["fallback_reason"] == "invalid_tool_input"
+    assert mission.trace_events[0].metadata["error_type"] == "invalid_project_id"
+
+
 def test_runtime_falls_back_when_llm_requests_stop(tmp_path):
     service = RuntimeFakeService(tmp_path)
     llm = FakeActionLLM(
