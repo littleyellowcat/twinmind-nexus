@@ -374,7 +374,7 @@ export async function startAgentMission(
     body: JSON.stringify(payload),
   });
   if (!response.ok) {
-    throw new Error(`Agent mission start failed: ${response.status}`);
+    throw new Error(`Agent mission start failed: ${await readErrorDetail(response)}`);
   }
   return (await response.json()) as AgentMission;
 }
@@ -382,7 +382,7 @@ export async function startAgentMission(
 export async function fetchAgentMission(missionId: string): Promise<AgentMission> {
   const response = await fetch(`${API_BASE_URL}/api/agent-missions/${encodeURIComponent(missionId)}`);
   if (!response.ok) {
-    throw new Error(`Agent mission fetch failed: ${response.status}`);
+    throw new Error(`Agent mission fetch failed: ${await readErrorDetail(response)}`);
   }
   return (await response.json()) as AgentMission;
 }
@@ -390,7 +390,7 @@ export async function fetchAgentMission(missionId: string): Promise<AgentMission
 export async function fetchAgentMissionTrace(missionId: string): Promise<AgentTraceEvent[]> {
   const response = await fetch(`${API_BASE_URL}/api/agent-missions/${encodeURIComponent(missionId)}/trace`);
   if (!response.ok) {
-    throw new Error(`Agent mission trace failed: ${response.status}`);
+    throw new Error(`Agent mission trace failed: ${await readErrorDetail(response)}`);
   }
   const payload = (await response.json()) as { trace_events: AgentTraceEvent[] };
   return payload.trace_events;
@@ -404,7 +404,7 @@ export async function updateAgentMissionStatus(
     method: "POST",
   });
   if (!response.ok) {
-    throw new Error(`Agent mission ${action} failed: ${response.status}`);
+    throw new Error(`Agent mission ${action} failed: ${await readErrorDetail(response)}`);
   }
   return (await response.json()) as AgentMission;
 }
@@ -432,6 +432,18 @@ export async function pollArchiveJob(
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+async function readErrorDetail(response: Response): Promise<string> {
+  try {
+    const payload = (await response.json()) as { detail?: unknown };
+    if (typeof payload.detail === "string" && payload.detail.trim()) {
+      return payload.detail;
+    }
+  } catch {
+    // Ignore malformed or empty error bodies and fall back to the status code.
+  }
+  return `${response.status}`;
 }
 
 function transformArchiveDraft(raw: RawArchiveDraft): ArchiveDraft {
