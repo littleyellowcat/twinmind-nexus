@@ -1,0 +1,337 @@
+"""Bounded tool registry for graph-grounded Agent missions."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any
+
+from src.project_archive.types import AgentRoleResult, EvidenceCard, ProjectArchiveDraft
+
+
+class ToolExecutionError(ValueError):
+    """Raised when an Agent tool call is not approved or has invalid input."""
+
+
+@dataclass(frozen=True)
+class AgentToolResult:
+    tool_name: str
+    summary: str
+    payload: dict[str, Any]
+    evidence_ids: list[str]
+    entity_ids: list[str]
+    relation_ids: list[str]
+
+
+class AgentToolRegistry:
+    """Dispatch only approved graph-grounded tools to existing archive services."""
+
+    def __init__(self, service: Any) -> None:
+        self.service = service
+        self._handlers = {
+            "get_evidence": self._get_evidence,
+            "graph_neighborhood": self._graph_neighborhood,
+            "graph_search": self._graph_search,
+            "graph_summary": self._graph_summary,
+            "hybrid_search": self._hybrid_search,
+            "inspect_entity": self._inspect_entity,
+            "list_halls": self._list_halls,
+            "run_specialist_agent": self._run_specialist_agent,
+        }
+
+    def tool_names(self) -> list[str]:
+        return sorted(self._handlers)
+
+    def execute(self, tool_name: str, tool_input: dict[str, Any]) -> AgentToolResult:
+        handler = self._handlers.get(tool_name)
+        if handler is None:
+            raise ToolExecutionError(f"Unknown Agent tool: {tool_name}")
+        if not isinstance(tool_input, dict):
+            raise ToolExecutionError("Agent tool input must be a dictionary.")
+        return handler(tool_input)
+
+    def _list_halls(self, tool_input: dict[str, Any]) -> AgentToolResult:
+        project_id = _required_str(tool_input, "project_id")
+        draft = self.service.load_draft(project_id)
+        halls = [hall.to_dict() for hall in draft.halls]
+        entity_ids = _unique_id_list(
+            entity_id for hall in draft.halls for entity_id in hall.entity_ids
+        )
+        return AgentToolResult(
+            tool_name="list_halls",
+            summary=f"Listed {len(halls)} archive halls.",
+            payload={"project_id": project_id, "halls": halls},
+            evidence_ids=[],
+            entity_ids=entity_ids,
+            relation_ids=[],
+        )
+
+    def _graph_summary(self, tool_input: dict[str, Any]) -> AgentToolResult:
+        project_id = _required_str(tool_input, "project_id")
+        payload = self.service.graph_summary(project_id).to_dict()
+        metrics = payload.get("metrics", {})
+        entities = int(metrics.get("entities", 0))
+        relations = int(metrics.get("relations", 0))
+        return AgentToolResult(
+            tool_name="graph_summary",
+            summary=f"Graph summary returned {entities} entities and {relations} relations.",
+            payload=payload,
+            evidence_ids=[],
+            entity_ids=[],
+            relation_ids=[],
+        )
+
+    def _graph_search(self, tool_input: dict[str, Any]) -> AgentToolResult:
+        project_id = _required_str(tool_input, "project_id")
+        query = _required_str(tool_input, "query")
+        limit = _positive_int(tool_input.get("limit", 20), "limit")
+        results = self.service.search_graph_entities(
+            project_id,
+            query=query,
+            limit=limit,
+        )
+        rows = [result.to_dict() for result in results]
+        return AgentToolResult(
+            tool_name="graph_search",
+            summary=f"Graph search returned {len(rows)} entities.",
+            payload={"project_id": project_id, "query": query, "results": rows},
+            evidence_ids=_unique_id_list(
+                evidence_id
+                for result in results
+                for evidence_id in getattr(result, "evidence_ids", [])
+            ),
+            entity_ids=_unique_id_list(getattr(result, "entity_id", "") for result in results),
+            relation_ids=[],
+        )
+
+    def _graph_neighborhood(self, tool_input: dict[str, Any]) -> AgentToolResult:
+        project_id = _required_str(tool_input, "project_id")
+        neighborhood = self.service.graph_neighborhood(
+            project_id,
+            hall_id=_optional_str(tool_input.get("hall_id")),
+            focus_entity_id=_optional_str(tool_input.get("focus_entity_id")),
+            depth=_positive_int(tool_input.get("depth", 1), "depth"),
+            relation_types=_string_list(tool_input.get("relation_types", [])),
+            node_limit=_positive_int(tool_input.get("node_limit", 80), "node_limit"),
+            relation_limit=_positive_int(
+                tool_input.get("relation_limit", 120),
+                "relation_limit",
+            ),
+        )
+        payload = neighborhood.to_dict()
+        nodes = payload.get("nodes", [])
+        relations = payload.get("relations", [])
+        return AgentToolResult(
+            tool_name="graph_neighborhood",
+            summary=(
+                f"Graph neighborhood returned {len(nodes)} nodes and "
+                f"{len(relations)} relations."
+            ),
+            payload=payload,
+            evidence_ids=_unique_id_list(payload.get("evidence_ids", [])),
+            entity_ids=_unique_id_list(node.get("id") for node in nodes if isinstance(node, dict)),
+            relation_ids=_unique_id_list(
+                relation.get("id") for relation in relations if isinstance(relation, dict)
+            ),
+        )
+
+    def _hybrid_search(self, tool_input: dict[str, Any]) -> AgentToolResult:
+        from src.project_archive.hybrid_rag import ProjectHybridRAGIndex
+
+        project_id = _required_str(tool_input, "project_id")
+        query = _required_str(tool_input, "query")
+        top_k = _positive_int(tool_input.get("top_k", 8), "top_k")
+        hall_id = _optional_str(tool_input.get("hall_id"))
+        storage_dir = getattr(self.service, "storage_dir", "data/project_archive")
+        result = ProjectHybridRAGIndex(storage_dir).search(
+            project_id=project_id,
+            query=query,
+            hall_id=hall_id,
+            top_k=top_k,
+        )
+        if result is None:
+            return AgentToolResult(
+                tool_name="hybrid_search",
+                summary="Hybrid search index is unavailable for this project.",
+                payload={
+                    "project_id": project_id,
+                    "query": query,
+                    "results": [],
+                    "metadata": {"enabled": False, "result_count": 0},
+                },
+                evidence_ids=[],
+                entity_ids=[],
+                relation_ids=[],
+            )
+
+        rows = [row.to_dict() for row in result.results]
+        return AgentToolResult(
+            tool_name="hybrid_search",
+            summary=f"Hybrid search returned {len(rows)} results.",
+            payload={
+                "project_id": project_id,
+                "query": query,
+                "results": rows,
+                "metadata": result.to_metadata(),
+            },
+            evidence_ids=_unique_id_list(
+                row.metadata.get("evidence_id") for row in result.results
+            ),
+            entity_ids=_unique_id_list(row.metadata.get("entity_id") for row in result.results),
+            relation_ids=_unique_id_list(
+                row.metadata.get("relation_id") for row in result.results
+            ),
+        )
+
+    def _get_evidence(self, tool_input: dict[str, Any]) -> AgentToolResult:
+        project_id = _required_str(tool_input, "project_id")
+        evidence_ids = _unique_id_list(tool_input.get("evidence_ids", []))
+        draft = self.service.load_draft(project_id)
+        cards = _evidence_by_ids(draft, evidence_ids)
+        found_ids = [card.id for card in cards]
+        return AgentToolResult(
+            tool_name="get_evidence",
+            summary=f"Returned {len(cards)} evidence cards.",
+            payload={
+                "project_id": project_id,
+                "evidence_cards": [card.to_dict() for card in cards],
+            },
+            evidence_ids=found_ids,
+            entity_ids=_unique_id_list(
+                entity_id for card in cards for entity_id in card.linked_entities
+            ),
+            relation_ids=[],
+        )
+
+    def _inspect_entity(self, tool_input: dict[str, Any]) -> AgentToolResult:
+        project_id = _required_str(tool_input, "project_id")
+        entity_id = _required_str(tool_input, "entity_id")
+        draft = self.service.load_draft(project_id)
+        entity = next((item for item in draft.entities if item.id == entity_id), None)
+        if entity is None:
+            raise ToolExecutionError(f"Entity not found: {entity_id}")
+
+        relations = [
+            relation
+            for relation in draft.relations
+            if relation.source_id == entity_id or relation.target_id == entity_id
+        ]
+        neighbor_ids = _unique_id_list(
+            relation.target_id if relation.source_id == entity_id else relation.source_id
+            for relation in relations
+        )
+        neighbors = [item for item in draft.entities if item.id in set(neighbor_ids)]
+        evidence_ids = _unique_id_list(
+            [
+                *entity.evidence_ids,
+                *[
+                    evidence_id
+                    for relation in relations
+                    for evidence_id in relation.evidence_ids
+                ],
+            ]
+        )
+        cards = _evidence_by_ids(draft, evidence_ids)
+        found_evidence_ids = [card.id for card in cards]
+        return AgentToolResult(
+            tool_name="inspect_entity",
+            summary=(
+                f"Inspected entity {entity_id} with {len(relations)} connected relations."
+            ),
+            payload={
+                "project_id": project_id,
+                "entity": entity.to_dict(),
+                "relations": [relation.to_dict() for relation in relations],
+                "neighbor_entities": [neighbor.to_dict() for neighbor in neighbors],
+                "evidence_cards": [card.to_dict() for card in cards],
+            },
+            evidence_ids=found_evidence_ids,
+            entity_ids=[entity_id],
+            relation_ids=[relation.id for relation in relations],
+        )
+
+    def _run_specialist_agent(self, tool_input: dict[str, Any]) -> AgentToolResult:
+        from src.project_archive.multi_agent import run_specialist_role
+
+        project_id = _required_str(tool_input, "project_id")
+        role = _required_str(tool_input, "role")
+        draft = self.service.load_draft(project_id)
+        prior_agents = _prior_agents(tool_input.get("prior_agents"))
+        result = run_specialist_role(
+            draft=draft,
+            role=role,
+            prior_agents=prior_agents,
+        )
+        return AgentToolResult(
+            tool_name="run_specialist_agent",
+            summary=result.summary,
+            payload={"project_id": project_id, "agent": result.to_dict()},
+            evidence_ids=list(result.evidence_card_ids),
+            entity_ids=list(result.entity_ids),
+            relation_ids=list(result.relation_ids),
+        )
+
+
+def _required_str(tool_input: dict[str, Any], key: str) -> str:
+    value = tool_input.get(key)
+    if not isinstance(value, str) or not value.strip():
+        raise ToolExecutionError(f"Agent tool input requires string field: {key}")
+    return value.strip()
+
+
+def _evidence_by_ids(
+    draft: ProjectArchiveDraft,
+    evidence_ids: list[str],
+) -> list[EvidenceCard]:
+    cards_by_id = {card.id: card for card in draft.evidence_cards}
+    return [cards_by_id[evidence_id] for evidence_id in evidence_ids if evidence_id in cards_by_id]
+
+
+def _unique_id_list(values: Any) -> list[str]:
+    unique: list[str] = []
+    seen: set[str] = set()
+    for value in values or []:
+        if not isinstance(value, str) or not value:
+            continue
+        if value in seen:
+            continue
+        seen.add(value)
+        unique.append(value)
+    return unique
+
+
+def _optional_str(value: Any) -> str | None:
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def _string_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ToolExecutionError("Agent tool input field must be a list of strings.")
+    return [item.strip() for item in value if isinstance(item, str) and item.strip()]
+
+
+def _positive_int(value: Any, key: str) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ToolExecutionError(f"Agent tool input requires integer field: {key}") from exc
+    if parsed < 1:
+        raise ToolExecutionError(f"Agent tool input field must be positive: {key}")
+    return parsed
+
+
+def _prior_agents(value: Any) -> dict[str, AgentRoleResult] | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ToolExecutionError("prior_agents must be a dictionary when provided.")
+    agents: dict[str, AgentRoleResult] = {}
+    for name, result in value.items():
+        if isinstance(result, AgentRoleResult):
+            agents[str(name)] = result
+        elif isinstance(result, dict):
+            agents[str(name)] = AgentRoleResult.from_dict(result)
+        else:
+            raise ToolExecutionError("prior_agents values must be AgentRoleResult payloads.")
+    return agents
