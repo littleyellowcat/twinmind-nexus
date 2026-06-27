@@ -205,6 +205,18 @@ class FakeActionLLM:
         )
 
 
+class RaisingActionLLM:
+    model = "raising-action-model"
+
+    def __init__(self, message: str):
+        self.message = message
+        self.messages: list[list[Message]] = []
+
+    def chat(self, messages, trace=None, **kwargs):
+        self.messages.append(messages)
+        raise RuntimeError(self.message)
+
+
 def test_plan_agent_mission_creates_bounded_tasks():
     draft = RuntimeFakeService(Path(".")).draft
 
@@ -481,6 +493,8 @@ def test_runtime_falls_back_when_llm_action_is_invalid(tmp_path):
 
     assert mission.trace_events[0].tool_name == "graph_summary"
     assert mission.trace_events[0].metadata["llm_fallback"] is True
+    assert mission.trace_events[0].metadata["fallback_reason"] == "invalid_llm_response"
+    assert mission.trace_events[0].metadata["error_type"] == "JSONDecodeError"
 
 
 def test_runtime_falls_back_when_llm_selects_disallowed_tool(tmp_path):
@@ -506,4 +520,86 @@ def test_runtime_falls_back_when_llm_selects_disallowed_tool(tmp_path):
 
     assert mission.trace_events[0].tool_name == "graph_summary"
     assert mission.trace_events[0].metadata["llm_fallback"] is True
-    assert "disallowed tool" in mission.trace_events[0].metadata["error"]
+    assert mission.trace_events[0].metadata["fallback_reason"] == "disallowed_tool"
+    assert "get_evidence" not in str(mission.trace_events[0].metadata)
+
+
+def test_runtime_falls_back_when_llm_selected_tool_input_is_invalid(tmp_path):
+    service = RuntimeFakeService(tmp_path)
+    llm = FakeActionLLM(
+        '{"thought_summary":"Search without a query",'
+        '"action":{"tool":"graph_search","input":{"project_id":"demo"}},'
+        '"stop":false}'
+    )
+    runtime = AgentMissionRuntime(
+        service=service,
+        store=MissionStore(tmp_path),
+        tool_registry=AgentToolRegistry(service),
+        llm=llm,
+    )
+
+    mission = runtime.start(
+        project_id="demo",
+        goal="Understand architecture",
+        max_tasks=1,
+        max_steps_per_task=1,
+    )
+
+    assert mission.status == "complete"
+    assert mission.trace_events[0].event_type == "action"
+    assert mission.trace_events[0].tool_name == "graph_summary"
+    assert mission.trace_events[0].metadata["llm_fallback"] is True
+    assert mission.trace_events[0].metadata["fallback_reason"] == "invalid_tool_input"
+    assert mission.trace_events[0].metadata["error_type"] == "missing_query"
+
+
+def test_runtime_falls_back_when_llm_requests_stop(tmp_path):
+    service = RuntimeFakeService(tmp_path)
+    llm = FakeActionLLM(
+        '{"thought_summary":"Enough context",'
+        '"action":{"tool":"graph_summary","input":{"project_id":"demo"}},'
+        '"stop":true}'
+    )
+    runtime = AgentMissionRuntime(
+        service=service,
+        store=MissionStore(tmp_path),
+        tool_registry=AgentToolRegistry(service),
+        llm=llm,
+    )
+
+    mission = runtime.start(
+        project_id="demo",
+        goal="Understand architecture",
+        max_tasks=1,
+        max_steps_per_task=1,
+    )
+
+    assert mission.trace_events[0].tool_name == "graph_summary"
+    assert mission.trace_events[0].metadata["llm_fallback"] is True
+    assert mission.trace_events[0].metadata["llm_stop_requested"] is True
+    assert mission.trace_events[0].metadata["fallback_reason"] == "stop_requested"
+
+
+def test_runtime_falls_back_when_llm_raises_without_leaking_message(tmp_path):
+    service = RuntimeFakeService(tmp_path)
+    llm = RaisingActionLLM("provider failed with secret-token-123")
+    runtime = AgentMissionRuntime(
+        service=service,
+        store=MissionStore(tmp_path),
+        tool_registry=AgentToolRegistry(service),
+        llm=llm,
+    )
+
+    mission = runtime.start(
+        project_id="demo",
+        goal="Understand architecture",
+        max_tasks=1,
+        max_steps_per_task=1,
+    )
+
+    metadata = mission.trace_events[0].metadata
+    assert mission.trace_events[0].tool_name == "graph_summary"
+    assert metadata["llm_fallback"] is True
+    assert metadata["fallback_reason"] == "llm_exception"
+    assert metadata["error_type"] == "RuntimeError"
+    assert "secret-token-123" not in str(metadata)

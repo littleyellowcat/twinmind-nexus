@@ -12,7 +12,7 @@ from typing import Any
 from uuid import uuid4
 
 from src.libs.llm import BaseLLM, Message
-from src.project_archive.agent_tools import AgentToolRegistry
+from src.project_archive.agent_tools import AgentToolRegistry, SPECIALIST_ROLES
 from src.project_archive.types import (
     AgentMission,
     AgentMissionBudget,
@@ -25,6 +25,7 @@ from src.project_archive.types import (
 
 DEFAULT_AGENT_GOAL = "Understand project architecture"
 MISSION_ID_GLOB_CHARS = {"*", "?", "[", "]", "{", "}"}
+MAX_THOUGHT_SUMMARY_CHARS = 240
 
 
 @dataclass(frozen=True)
@@ -121,7 +122,7 @@ def plan_agent_mission(
 
 
 def _parse_action_response(content: str) -> tuple[str, str, dict[str, object], bool]:
-    payload = json.loads(content)
+    payload = json.loads(content, parse_constant=_reject_json_constant)
     if not isinstance(payload, dict):
         raise ValueError("LLM action response must be a JSON object.")
 
@@ -147,7 +148,120 @@ def _parse_action_response(content: str) -> tuple[str, str, dict[str, object], b
     if not isinstance(stop, bool):
         raise ValueError("LLM stop must be a boolean.")
 
-    return thought_summary.strip(), tool.strip(), dict(tool_input), stop
+    return (
+        thought_summary.strip()[:MAX_THOUGHT_SUMMARY_CHARS],
+        tool.strip(),
+        dict(tool_input),
+        stop,
+    )
+
+
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"Invalid JSON constant: {value}")
+
+
+def _validate_llm_tool_input(tool_name: str, tool_input: dict[str, Any]) -> str | None:
+    project_id_error = _validate_required_str(tool_input, "project_id")
+    if project_id_error:
+        return project_id_error
+
+    if tool_name in {"graph_summary", "list_halls"}:
+        return None
+    if tool_name in {"graph_search", "hybrid_search"}:
+        return _validate_required_str(tool_input, "query")
+    if tool_name == "graph_neighborhood":
+        for key in ("hall_id", "focus_entity_id"):
+            if key in tool_input and not _is_optional_str(tool_input[key]):
+                return f"invalid_{key}"
+        for key in ("depth", "node_limit", "relation_limit"):
+            if key in tool_input and not _is_positive_int_like(tool_input[key]):
+                return f"invalid_{key}"
+        if "relation_types" in tool_input and not _is_string_list(
+            tool_input["relation_types"],
+            allow_empty=True,
+        ):
+            return "invalid_relation_types"
+        return None
+    if tool_name == "get_evidence":
+        if "evidence_ids" in tool_input and not _is_string_list(
+            tool_input["evidence_ids"],
+            allow_empty=True,
+        ):
+            return "invalid_evidence_ids"
+        return None
+    if tool_name == "inspect_entity":
+        return _validate_required_str(tool_input, "entity_id")
+    if tool_name == "run_specialist_agent":
+        role_error = _validate_required_str(tool_input, "role")
+        if role_error:
+            return role_error
+        if tool_input["role"].strip() not in SPECIALIST_ROLES:
+            return "invalid_role"
+        if "prior_agents" in tool_input and not isinstance(
+            tool_input["prior_agents"],
+            dict,
+        ):
+            return "invalid_prior_agents"
+        return None
+    return "unknown_tool"
+
+
+def _validate_required_str(tool_input: dict[str, Any], key: str) -> str | None:
+    value = tool_input.get(key)
+    if not isinstance(value, str) or not value.strip():
+        return f"missing_{key}"
+    return None
+
+
+def _is_optional_str(value: Any) -> bool:
+    return value is None or isinstance(value, str)
+
+
+def _is_positive_int_like(value: Any) -> bool:
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int):
+        return value >= 1
+    if isinstance(value, float):
+        return value.is_integer() and value >= 1
+    if isinstance(value, str):
+        return value.strip().isdigit() and int(value.strip()) >= 1
+    return False
+
+
+def _is_string_list(value: Any, *, allow_empty: bool) -> bool:
+    if value is None:
+        return allow_empty
+    if not isinstance(value, list):
+        return False
+    if not allow_empty and not value:
+        return False
+    return all(isinstance(item, str) and item.strip() for item in value)
+
+
+def _llm_fallback_metadata(
+    fallback_reason: str,
+    *,
+    error_type: str | None = None,
+    model: str | None = None,
+    thought_summary: str | None = None,
+    llm_stop_requested: bool = False,
+) -> dict[str, Any]:
+    metadata: dict[str, Any] = {
+        "selection": "deterministic",
+        "llm_fallback": True,
+        "fallback_reason": fallback_reason,
+        "llm_selection_attempts": 1,
+    }
+    if error_type:
+        metadata["error_type"] = error_type[:80]
+    if model:
+        metadata["model"] = model[:120]
+    if thought_summary:
+        metadata["thought_summary"] = thought_summary[:MAX_THOUGHT_SUMMARY_CHARS]
+    if llm_stop_requested:
+        metadata["llm_stop_requested"] = True
+    return metadata
 
 
 def _action_messages(
@@ -699,52 +813,77 @@ class AgentMissionRuntime:
                     trace_events=trace_events,
                 )
             )
-            thought_summary, tool_name, tool_input, stop_requested = (
-                _parse_action_response(response.content)
-            )
-            metadata: dict[str, Any] = {
-                "selection": "llm",
-                "model": response.model,
-            }
-            if thought_summary:
-                metadata["thought_summary"] = thought_summary
-
-            if stop_requested:
-                return (
-                    default_tool_name,
-                    fallback_input,
-                    {
-                        **metadata,
-                        "selection": "deterministic",
-                        "llm_stop_requested": True,
-                        "llm_fallback": True,
-                    },
-                )
-            if tool_name not in task.allowed_tools:
-                return (
-                    default_tool_name,
-                    fallback_input,
-                    {
-                        **metadata,
-                        "selection": "deterministic",
-                        "llm_fallback": True,
-                        "error": f"LLM selected disallowed tool: {tool_name}",
-                    },
-                )
-
-            selected_input = dict(tool_input)
-            selected_input.setdefault("project_id", mission.project_id)
-            return tool_name, selected_input, metadata
         except Exception as exc:
             return (
                 default_tool_name,
                 fallback_input,
-                {
-                    **deterministic_metadata,
-                    "llm_fallback": True,
-                    "error": str(exc),
-                },
+                _llm_fallback_metadata(
+                    "llm_exception",
+                    error_type=exc.__class__.__name__,
+                ),
             )
+
+        model = getattr(response, "model", None)
+        try:
+            thought_summary, tool_name, tool_input, stop_requested = (
+                _parse_action_response(response.content)
+            )
+        except Exception as exc:
+            return (
+                default_tool_name,
+                fallback_input,
+                _llm_fallback_metadata(
+                    "invalid_llm_response",
+                    error_type=exc.__class__.__name__,
+                    model=model,
+                ),
+            )
+
+        metadata: dict[str, Any] = {
+            "selection": "llm",
+            "model": model,
+            "llm_selection_attempts": 1,
+        }
+        if thought_summary:
+            metadata["thought_summary"] = thought_summary
+
+        if stop_requested:
+            return (
+                default_tool_name,
+                fallback_input,
+                _llm_fallback_metadata(
+                    "stop_requested",
+                    model=model,
+                    thought_summary=thought_summary,
+                    llm_stop_requested=True,
+                ),
+            )
+        if tool_name not in task.allowed_tools:
+            return (
+                default_tool_name,
+                fallback_input,
+                _llm_fallback_metadata(
+                    "disallowed_tool",
+                    model=model,
+                    thought_summary=thought_summary,
+                ),
+            )
+
+        selected_input = dict(tool_input)
+        selected_input.setdefault("project_id", mission.project_id)
+        input_error = _validate_llm_tool_input(tool_name, selected_input)
+        if input_error:
+            return (
+                default_tool_name,
+                fallback_input,
+                _llm_fallback_metadata(
+                    "invalid_tool_input",
+                    error_type=input_error,
+                    model=model,
+                    thought_summary=thought_summary,
+                ),
+            )
+        return tool_name, selected_input, metadata
 
     def _verify_mission(
         self,
