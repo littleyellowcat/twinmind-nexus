@@ -542,12 +542,20 @@ const buildVisibleGraph = (
 ) => {
   const usableRelations = relations.filter((relation) => relation.source && relation.target);
   const rankedRelations = rankRelations(usableRelations, selectedRelationId);
+  const selectedRelation = usableRelations.find((relation) => relation.id === selectedRelationId);
   const nodeLabels = new Map<string, string>();
   const edgeRelations: ArchiveRelation[] = [];
+  const seenNodePairKeys = new Set<string>();
 
-  rankedRelations.forEach((relation) => {
+  const addRelation = (
+    relation: ArchiveRelation,
+    options: { allowRepeatedPair?: boolean; requireNewNode?: boolean } = {},
+  ) => {
     if (edgeRelations.length >= maxGraphEdges) return;
+    const nodePairKey = `${relation.source}\u0000${relation.target}`;
+    if (!options.allowRepeatedPair && seenNodePairKeys.has(nodePairKey)) return;
     const nextNodes = [relation.source, relation.target].filter((node) => !nodeLabels.has(node));
+    if (options.requireNewNode && nextNodes.length === 0) return;
     const hasRoomForNodes = nodeLabels.size + nextNodes.length <= maxGraphNodes;
     const connectsVisibleNodes = nodeLabels.has(relation.source) && nodeLabels.has(relation.target);
 
@@ -556,9 +564,20 @@ const buildVisibleGraph = (
     nodeLabels.set(relation.source, relation.source);
     nodeLabels.set(relation.target, relation.target);
     edgeRelations.push(relation);
+    seenNodePairKeys.add(nodePairKey);
+  };
+
+  if (selectedRelation) addRelation(selectedRelation, { allowRepeatedPair: true });
+  rankedRelations.forEach((relation) => {
+    if (relation.id !== selectedRelationId) addRelation(relation, { requireNewNode: true });
+  });
+  rankedRelations.forEach((relation) => {
+    if (relation.id !== selectedRelationId) addRelation(relation);
+  });
+  rankedRelations.forEach((relation) => {
+    if (relation.id !== selectedRelationId) addRelation(relation, { allowRepeatedPair: true });
   });
 
-  const selectedRelation = usableRelations.find((relation) => relation.id === selectedRelationId);
   const selectedNodeNames = new Set<string>();
   if (selectedRelation) {
     selectedNodeNames.add(selectedRelation.source);
@@ -1014,9 +1033,13 @@ function StarMap({
     [filteredRelations, searchMatchedNodeLabels, selectedRelationId],
   );
   const graphCounter =
-    locale === "zh"
-      ? `显示 ${formatNumber(visibleGraph.nodes.length)} 个节点 / ${formatNumber(visibleGraph.edges.length)} 条关系，当前匹配 ${formatNumber(visibleGraph.totalRelations)} 条`
-      : `Showing ${formatNumber(visibleGraph.nodes.length)} nodes / ${formatNumber(visibleGraph.edges.length)} relations from ${formatNumber(visibleGraph.totalRelations)} matches`;
+    visibleGraph.selectedRelation
+      ? locale === "zh"
+        ? `聚焦显示 ${formatNumber(visibleGraph.nodes.length)} 个节点 / ${formatNumber(visibleGraph.edges.length)} 条关系，当前匹配 ${formatNumber(visibleGraph.totalRelations)} 条`
+        : `Focused sample: ${formatNumber(visibleGraph.nodes.length)} nodes / ${formatNumber(visibleGraph.edges.length)} relations from ${formatNumber(visibleGraph.totalRelations)} matches`
+      : locale === "zh"
+        ? `抽样显示 ${formatNumber(visibleGraph.nodes.length)} 个节点 / ${formatNumber(visibleGraph.edges.length)} 条关系，当前匹配 ${formatNumber(visibleGraph.totalRelations)} 条`
+        : `Sampled ${formatNumber(visibleGraph.nodes.length)} nodes / ${formatNumber(visibleGraph.edges.length)} relations from ${formatNumber(visibleGraph.totalRelations)} matches`;
   const emptyGraphText =
     locale === "zh"
       ? "当前展厅还没有可展示的关系。换一个展厅或清空搜索试试。"
