@@ -429,8 +429,9 @@ button {
 
 .metric-strip {
   display: grid;
-  grid-template-columns: repeat(4, 104px);
+  grid-template-columns: repeat(4, minmax(128px, 1fr));
   gap: 8px;
+  max-width: 880px;
 }
 
 .metric {
@@ -459,13 +460,22 @@ button {
 }
 
 .metric-value {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-variant-numeric: tabular-nums;
-  font-size: 17px;
+  font-size: clamp(14px, 1.9vw, 17px);
   line-height: 20px;
   font-weight: 760;
 }
 
 .metric-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--subtle);
   font-size: 11px;
   line-height: 14px;
