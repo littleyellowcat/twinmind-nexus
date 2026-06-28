@@ -77,6 +77,9 @@ type AgentReportJobResult = {
   agent_report?: ProjectAgentReport;
 };
 
+const DEFAULT_JOB_POLL_TIMEOUT_MS = 1000 * 60 * 6;
+const ARCHIVE_UPLOAD_POLL_TIMEOUT_MS = 1000 * 60 * 30;
+
 export type UploadArchiveResult = {
   draft: ArchiveDraft;
 };
@@ -235,7 +238,11 @@ export async function uploadProjectArchive(
     request.send(formData);
   });
 
-  const finishedJob = await pollArchiveJob(job.id, onProgress);
+  const finishedJob = await pollArchiveJob(job.id, onProgress, {
+    timeoutMs: ARCHIVE_UPLOAD_POLL_TIMEOUT_MS,
+    timeoutMessage:
+      "Archive job is still running after 30 minutes. It may finish on the backend; check the archive switcher later.",
+  });
   const payload = (finishedJob.result ?? {}) as UploadArchiveJobResult;
   if (!payload.archive) {
     throw new Error(finishedJob.error ?? "Archive job finished without an archive.");
@@ -412,9 +419,11 @@ export async function updateAgentMissionStatus(
 export async function pollArchiveJob(
   jobId: string,
   onProgress?: (progress: number, message: string, projectId?: string | null) => void,
+  options: { timeoutMs?: number; timeoutMessage?: string } = {},
 ): Promise<ArchiveJob> {
   const startedAt = Date.now();
-  while (Date.now() - startedAt < 1000 * 60 * 6) {
+  const timeoutMs = options.timeoutMs ?? DEFAULT_JOB_POLL_TIMEOUT_MS;
+  while (Date.now() - startedAt < timeoutMs) {
     const response = await fetch(`${API_BASE_URL}/api/jobs/${encodeURIComponent(jobId)}`);
     if (!response.ok) {
       throw new Error(`Archive job polling failed: ${response.status}`);
@@ -427,7 +436,7 @@ export async function pollArchiveJob(
     }
     await delay(800);
   }
-  throw new Error("Archive job timed out.");
+  throw new Error(options.timeoutMessage ?? "Archive job timed out.");
 }
 
 function delay(ms: number): Promise<void> {

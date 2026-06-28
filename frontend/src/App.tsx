@@ -3076,6 +3076,7 @@ export function App() {
     setUploadProgress(2);
     setUploadProgressMessage(String(copy[locale].createPending));
     notify(String(copy[locale].createPending));
+    let archiveWasCreated = false;
     try {
       const { draft } = await uploadProjectArchive(
         selectedFile,
@@ -3098,17 +3099,22 @@ export function App() {
       setIsFallbackArchive(false);
       setSelectedFile(null);
       setSelectedFileName("");
+      archiveWasCreated = true;
       notify(`${copy[locale].archiveCreated}: ${draft.projectId}`);
     } catch (error) {
       if (token !== archiveRequestTokenRef.current) return;
       const message = error instanceof Error ? error.message : String(copy[locale].uploadFailed);
+      setUploadProgress((progress) => (progress > 0 ? progress : 100));
+      setUploadProgressMessage(message);
       notify(`${copy[locale].uploadFailed}: ${message}`);
     } finally {
       setIsCreatingArchive(false);
-      window.setTimeout(() => {
-        setUploadProgress(0);
-        setUploadProgressMessage("");
-      }, 1200);
+      if (archiveWasCreated) {
+        window.setTimeout(() => {
+          setUploadProgress(0);
+          setUploadProgressMessage("");
+        }, 1200);
+      }
     }
   };
 
