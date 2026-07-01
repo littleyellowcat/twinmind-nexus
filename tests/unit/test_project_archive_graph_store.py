@@ -1,10 +1,16 @@
+import sys
+import types
 from importlib.util import find_spec
 
 import pytest
 
+from types import SimpleNamespace
+
+from src.project_archive.service import ProjectArchiveService
 from src.project_archive.graph_store import (
     GraphStoreFactory,
     KuzuGraphStore,
+    Neo4jGraphStore,
     SQLiteGraphStore,
     create_graph_store,
 )
@@ -46,6 +52,105 @@ def test_create_graph_store_uses_preferred_provider(tmp_path):
     )
 
     assert isinstance(store, SQLiteGraphStore)
+
+
+def test_graph_store_factory_can_create_neo4j_provider(monkeypatch, tmp_path):
+    run_calls = []
+
+    class FakeResult:
+        def consume(self):
+            return None
+
+        def __iter__(self):
+            return iter([])
+
+    class FakeTx:
+        def run(self, query, **params):
+            run_calls.append((query, params))
+            return FakeResult()
+
+    class FakeSession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def execute_write(self, callback):
+            return callback(FakeTx())
+
+        def execute_read(self, callback):
+            return callback(FakeTx())
+
+    class FakeDriver:
+        def session(self, database=None):
+            assert database == "neo4j"
+            return FakeSession()
+
+        def close(self):
+            return None
+
+    class FakeGraphDatabase:
+        @staticmethod
+        def driver(uri, auth):
+            assert uri == "bolt://neo4j.local:7687"
+            assert auth == ("neo4j", "secret")
+            return FakeDriver()
+
+    fake_module = types.ModuleType("neo4j")
+    fake_module.GraphDatabase = FakeGraphDatabase
+    monkeypatch.setitem(sys.modules, "neo4j", fake_module)
+
+    store = GraphStoreFactory.create(
+        provider="neo4j",
+        path=tmp_path / "ignored",
+        project_id="sample",
+        config={
+            "uri": "bolt://neo4j.local:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "neo4j",
+        },
+    )
+
+    assert isinstance(store, Neo4jGraphStore)
+    assert any("ProjectEntity" in query for query, _ in run_calls)
+
+
+def test_neo4j_graph_store_requires_project_id(monkeypatch):
+    fake_module = types.ModuleType("neo4j")
+    fake_module.GraphDatabase = object()
+    monkeypatch.setitem(sys.modules, "neo4j", fake_module)
+
+    with pytest.raises(ValueError, match="project_id"):
+        Neo4jGraphStore(
+            uri="bolt://localhost:7687",
+            username="neo4j",
+            password="secret",
+            project_id="",
+        )
+
+
+def test_project_archive_service_reads_configured_graph_provider(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "src.project_archive.service.load_settings",
+        lambda: SimpleNamespace(
+            project_archive=SimpleNamespace(
+                graph_store=SimpleNamespace(
+                    provider="neo4j",
+                    uri="bolt://localhost:7687",
+                    username="neo4j",
+                    password="secret",
+                    database="neo4j",
+                )
+            )
+        ),
+    )
+
+    service = ProjectArchiveService(storage_dir=tmp_path)
+
+    assert service.graph_provider == "neo4j"
+    assert service.graph_config["uri"] == "bolt://localhost:7687"
 
 
 def test_graph_store_finds_paths_by_entity_names(tmp_path):

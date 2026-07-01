@@ -125,6 +125,7 @@ class ProjectArchiveDraft:
     relations: list[ProjectRelation] = field(default_factory=list)
     evidence_cards: list[EvidenceCard] = field(default_factory=list)
     confirmation_items: list[str] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -142,6 +143,523 @@ class ProjectArchiveDraft:
                 EvidenceCard.from_dict(item) for item in data.get("evidence_cards", [])
             ],
             confirmation_items=list(data.get("confirmation_items", [])),
+            metadata=dict(data.get("metadata", {})),
+        )
+
+
+@dataclass(frozen=True)
+class GraphMergeCandidate:
+    id: str
+    label: str
+    entity_ids: list[str] = field(default_factory=list)
+    created_at: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> GraphMergeCandidate:
+        return cls(
+            id=str(data.get("id", "")),
+            label=str(data.get("label", "")),
+            entity_ids=[str(item) for item in data.get("entity_ids", [])],
+            created_at=str(data.get("created_at", "")),
+        )
+
+
+@dataclass(frozen=True)
+class GraphCurationState:
+    project_id: str
+    important_entity_ids: list[str] = field(default_factory=list)
+    hidden_relation_ids: list[str] = field(default_factory=list)
+    merge_candidates: list[GraphMergeCandidate] = field(default_factory=list)
+    updated_at: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "project_id": self.project_id,
+            "important_entity_ids": list(self.important_entity_ids),
+            "hidden_relation_ids": list(self.hidden_relation_ids),
+            "merge_candidates": [
+                candidate.to_dict() for candidate in self.merge_candidates
+            ],
+            "updated_at": self.updated_at,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> GraphCurationState:
+        return cls(
+            project_id=str(data.get("project_id", "")),
+            important_entity_ids=[
+                str(item) for item in data.get("important_entity_ids", [])
+            ],
+            hidden_relation_ids=[
+                str(item) for item in data.get("hidden_relation_ids", [])
+            ],
+            merge_candidates=[
+                GraphMergeCandidate.from_dict(item)
+                for item in data.get("merge_candidates", [])
+                if isinstance(item, dict)
+            ],
+            updated_at=str(data.get("updated_at", "")),
+        )
+
+
+@dataclass(frozen=True)
+class ArchiveGoldenQuestion:
+    id: str
+    question: str
+    category: str
+    expected_entity_ids: list[str] = field(default_factory=list)
+    expected_relation_ids: list[str] = field(default_factory=list)
+    expected_evidence_ids: list[str] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ArchiveGoldenQuestion:
+        return cls(
+            id=str(data.get("id", "")),
+            question=str(data.get("question", "")),
+            category=str(data.get("category", "general")),
+            expected_entity_ids=[
+                str(item) for item in data.get("expected_entity_ids", [])
+            ],
+            expected_relation_ids=[
+                str(item) for item in data.get("expected_relation_ids", [])
+            ],
+            expected_evidence_ids=[
+                str(item) for item in data.get("expected_evidence_ids", [])
+            ],
+            metadata=dict(data.get("metadata", {})),
+        )
+
+
+@dataclass(frozen=True)
+class ArchiveEvaluationCaseResult:
+    question_id: str
+    question: str
+    category: str
+    mode: str
+    expected_entity_ids: list[str] = field(default_factory=list)
+    expected_relation_ids: list[str] = field(default_factory=list)
+    expected_evidence_ids: list[str] = field(default_factory=list)
+    matched_entity_ids: list[str] = field(default_factory=list)
+    matched_relation_ids: list[str] = field(default_factory=list)
+    matched_evidence_ids: list[str] = field(default_factory=list)
+    metrics: dict[str, float] = field(default_factory=dict)
+    summary: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ArchiveEvaluationCaseResult:
+        return cls(
+            question_id=str(data.get("question_id", "")),
+            question=str(data.get("question", "")),
+            category=str(data.get("category", "general")),
+            mode=str(data.get("mode", "deterministic_graph_rag")),
+            expected_entity_ids=[
+                str(item) for item in data.get("expected_entity_ids", [])
+            ],
+            expected_relation_ids=[
+                str(item) for item in data.get("expected_relation_ids", [])
+            ],
+            expected_evidence_ids=[
+                str(item) for item in data.get("expected_evidence_ids", [])
+            ],
+            matched_entity_ids=[
+                str(item) for item in data.get("matched_entity_ids", [])
+            ],
+            matched_relation_ids=[
+                str(item) for item in data.get("matched_relation_ids", [])
+            ],
+            matched_evidence_ids=[
+                str(item) for item in data.get("matched_evidence_ids", [])
+            ],
+            metrics={
+                str(key): float(value)
+                for key, value in data.get("metrics", {}).items()
+            },
+            summary=str(data.get("summary", "")),
+            metadata=dict(data.get("metadata", {})),
+        )
+
+
+@dataclass(frozen=True)
+class ArchiveEvaluationReport:
+    project_id: str
+    created_at: str
+    golden_question_count: int
+    aggregate_metrics: dict[str, float] = field(default_factory=dict)
+    case_results: list[ArchiveEvaluationCaseResult] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "project_id": self.project_id,
+            "created_at": self.created_at,
+            "golden_question_count": self.golden_question_count,
+            "aggregate_metrics": dict(self.aggregate_metrics),
+            "case_results": [case.to_dict() for case in self.case_results],
+            "metadata": dict(self.metadata),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ArchiveEvaluationReport:
+        return cls(
+            project_id=str(data.get("project_id", "")),
+            created_at=str(data.get("created_at", "")),
+            golden_question_count=int(data.get("golden_question_count", 0)),
+            aggregate_metrics={
+                str(key): float(value)
+                for key, value in data.get("aggregate_metrics", {}).items()
+            },
+            case_results=[
+                ArchiveEvaluationCaseResult.from_dict(item)
+                for item in data.get("case_results", [])
+                if isinstance(item, dict)
+            ],
+            metadata=dict(data.get("metadata", {})),
+        )
+
+
+@dataclass(frozen=True)
+class ProjectUniverseProject:
+    project_id: str
+    metrics: dict[str, int] = field(default_factory=dict)
+    top_entity_types: list[dict[str, Any]] = field(default_factory=list)
+    evidence_modalities: dict[str, int] = field(default_factory=dict)
+    hall_names: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "project_id": self.project_id,
+            "metrics": dict(self.metrics),
+            "top_entity_types": [dict(item) for item in self.top_entity_types],
+            "evidence_modalities": dict(self.evidence_modalities),
+            "hall_names": list(self.hall_names),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ProjectUniverseProject:
+        return cls(
+            project_id=str(data.get("project_id", "")),
+            metrics={str(key): int(value) for key, value in data.get("metrics", {}).items()},
+            top_entity_types=[
+                dict(item) for item in data.get("top_entity_types", []) if isinstance(item, dict)
+            ],
+            evidence_modalities={
+                str(key): int(value)
+                for key, value in data.get("evidence_modalities", {}).items()
+            },
+            hall_names=[str(item) for item in data.get("hall_names", [])],
+        )
+
+
+@dataclass(frozen=True)
+class ProjectUniverseEntityRef:
+    project_id: str
+    entity_id: str
+    label: str
+    type: str
+    source_path: str | None = None
+    degree: int = 0
+    evidence_count: int = 0
+    hall_ids: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ProjectUniverseEntityRef:
+        return cls(
+            project_id=str(data.get("project_id", "")),
+            entity_id=str(data.get("entity_id", "")),
+            label=str(data.get("label", "")),
+            type=str(data.get("type", "")),
+            source_path=data.get("source_path"),
+            degree=int(data.get("degree", 0)),
+            evidence_count=int(data.get("evidence_count", 0)),
+            hall_ids=[str(item) for item in data.get("hall_ids", [])],
+        )
+
+
+@dataclass(frozen=True)
+class ProjectUniverseLink:
+    id: str
+    type: str
+    source: ProjectUniverseEntityRef
+    target: ProjectUniverseEntityRef
+    score: float
+    reason: str
+    shared_key: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "type": self.type,
+            "source": self.source.to_dict(),
+            "target": self.target.to_dict(),
+            "score": self.score,
+            "reason": self.reason,
+            "shared_key": self.shared_key,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ProjectUniverseLink:
+        return cls(
+            id=str(data.get("id", "")),
+            type=str(data.get("type", "")),
+            source=ProjectUniverseEntityRef.from_dict(data.get("source", {})),
+            target=ProjectUniverseEntityRef.from_dict(data.get("target", {})),
+            score=float(data.get("score", 0.0)),
+            reason=str(data.get("reason", "")),
+            shared_key=str(data.get("shared_key", "")),
+        )
+
+
+@dataclass(frozen=True)
+class ProjectUniverseCluster:
+    id: str
+    label: str
+    type: str
+    project_ids: list[str] = field(default_factory=list)
+    entity_refs: list[ProjectUniverseEntityRef] = field(default_factory=list)
+    score: float = 0.0
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "label": self.label,
+            "type": self.type,
+            "project_ids": list(self.project_ids),
+            "entity_refs": [ref.to_dict() for ref in self.entity_refs],
+            "score": self.score,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ProjectUniverseCluster:
+        return cls(
+            id=str(data.get("id", "")),
+            label=str(data.get("label", "")),
+            type=str(data.get("type", "")),
+            project_ids=[str(item) for item in data.get("project_ids", [])],
+            entity_refs=[
+                ProjectUniverseEntityRef.from_dict(item)
+                for item in data.get("entity_refs", [])
+                if isinstance(item, dict)
+            ],
+            score=float(data.get("score", 0.0)),
+        )
+
+
+@dataclass(frozen=True)
+class ProjectKnowledgeUniverse:
+    created_at: str
+    project_ids: list[str] = field(default_factory=list)
+    metrics: dict[str, int] = field(default_factory=dict)
+    projects: list[ProjectUniverseProject] = field(default_factory=list)
+    links: list[ProjectUniverseLink] = field(default_factory=list)
+    clusters: list[ProjectUniverseCluster] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "created_at": self.created_at,
+            "project_ids": list(self.project_ids),
+            "metrics": dict(self.metrics),
+            "projects": [project.to_dict() for project in self.projects],
+            "links": [link.to_dict() for link in self.links],
+            "clusters": [cluster.to_dict() for cluster in self.clusters],
+            "metadata": dict(self.metadata),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ProjectKnowledgeUniverse:
+        return cls(
+            created_at=str(data.get("created_at", "")),
+            project_ids=[str(item) for item in data.get("project_ids", [])],
+            metrics={str(key): int(value) for key, value in data.get("metrics", {}).items()},
+            projects=[
+                ProjectUniverseProject.from_dict(item)
+                for item in data.get("projects", [])
+                if isinstance(item, dict)
+            ],
+            links=[
+                ProjectUniverseLink.from_dict(item)
+                for item in data.get("links", [])
+                if isinstance(item, dict)
+            ],
+            clusters=[
+                ProjectUniverseCluster.from_dict(item)
+                for item in data.get("clusters", [])
+                if isinstance(item, dict)
+            ],
+            metadata=dict(data.get("metadata", {})),
+        )
+
+
+@dataclass(frozen=True)
+class UniverseExplorationPath:
+    id: str
+    name: str
+    project_ids: list[str] = field(default_factory=list)
+    cluster_ids: list[str] = field(default_factory=list)
+    link_ids: list[str] = field(default_factory=list)
+    notes: str = ""
+    created_at: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> UniverseExplorationPath:
+        return cls(
+            id=str(data.get("id", "")),
+            name=str(data.get("name", "")),
+            project_ids=[str(item) for item in data.get("project_ids", [])],
+            cluster_ids=[str(item) for item in data.get("cluster_ids", [])],
+            link_ids=[str(item) for item in data.get("link_ids", [])],
+            notes=str(data.get("notes", "")),
+            created_at=str(data.get("created_at", "")),
+            metadata=dict(data.get("metadata", {})),
+        )
+
+
+@dataclass(frozen=True)
+class UniverseAgentTask:
+    id: str
+    status: str
+    objective: str
+    project_ids: list[str] = field(default_factory=list)
+    cluster_ids: list[str] = field(default_factory=list)
+    link_ids: list[str] = field(default_factory=list)
+    findings: list[dict[str, Any]] = field(default_factory=list)
+    evidence: list[dict[str, Any]] = field(default_factory=list)
+    next_actions: list[str] = field(default_factory=list)
+    created_at: str = ""
+    completed_at: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> UniverseAgentTask:
+        return cls(
+            id=str(data.get("id", "")),
+            status=str(data.get("status", "planned")),
+            objective=str(data.get("objective", "")),
+            project_ids=[str(item) for item in data.get("project_ids", [])],
+            cluster_ids=[str(item) for item in data.get("cluster_ids", [])],
+            link_ids=[str(item) for item in data.get("link_ids", [])],
+            findings=[
+                dict(item) for item in data.get("findings", []) if isinstance(item, dict)
+            ],
+            evidence=[
+                dict(item) for item in data.get("evidence", []) if isinstance(item, dict)
+            ],
+            next_actions=[str(item) for item in data.get("next_actions", [])],
+            created_at=str(data.get("created_at", "")),
+            completed_at=str(data.get("completed_at", "")),
+            metadata=dict(data.get("metadata", {})),
+        )
+
+
+@dataclass(frozen=True)
+class ProjectArchitectureDiffReport:
+    id: str
+    left_project_id: str
+    right_project_id: str
+    created_at: str
+    summary: str
+    shared_clusters: list[ProjectUniverseCluster] = field(default_factory=list)
+    shared_links: list[ProjectUniverseLink] = field(default_factory=list)
+    only_left: list[ProjectUniverseEntityRef] = field(default_factory=list)
+    only_right: list[ProjectUniverseEntityRef] = field(default_factory=list)
+    metric_delta: dict[str, int] = field(default_factory=dict)
+    findings: list[dict[str, Any]] = field(default_factory=list)
+    recommendations: list[str] = field(default_factory=list)
+    sections: list[dict[str, Any]] = field(default_factory=list)
+    evidence_chain: list[dict[str, Any]] = field(default_factory=list)
+    component_delta: dict[str, Any] = field(default_factory=dict)
+    risk_points: list[dict[str, Any]] = field(default_factory=list)
+    migration_notes: list[str] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "left_project_id": self.left_project_id,
+            "right_project_id": self.right_project_id,
+            "created_at": self.created_at,
+            "summary": self.summary,
+            "shared_clusters": [cluster.to_dict() for cluster in self.shared_clusters],
+            "shared_links": [link.to_dict() for link in self.shared_links],
+            "only_left": [ref.to_dict() for ref in self.only_left],
+            "only_right": [ref.to_dict() for ref in self.only_right],
+            "metric_delta": dict(self.metric_delta),
+            "findings": [dict(item) for item in self.findings],
+            "recommendations": list(self.recommendations),
+            "sections": [dict(item) for item in self.sections],
+            "evidence_chain": [dict(item) for item in self.evidence_chain],
+            "component_delta": dict(self.component_delta),
+            "risk_points": [dict(item) for item in self.risk_points],
+            "migration_notes": list(self.migration_notes),
+            "metadata": dict(self.metadata),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ProjectArchitectureDiffReport:
+        return cls(
+            id=str(data.get("id", "")),
+            left_project_id=str(data.get("left_project_id", "")),
+            right_project_id=str(data.get("right_project_id", "")),
+            created_at=str(data.get("created_at", "")),
+            summary=str(data.get("summary", "")),
+            shared_clusters=[
+                ProjectUniverseCluster.from_dict(item)
+                for item in data.get("shared_clusters", [])
+                if isinstance(item, dict)
+            ],
+            shared_links=[
+                ProjectUniverseLink.from_dict(item)
+                for item in data.get("shared_links", [])
+                if isinstance(item, dict)
+            ],
+            only_left=[
+                ProjectUniverseEntityRef.from_dict(item)
+                for item in data.get("only_left", [])
+                if isinstance(item, dict)
+            ],
+            only_right=[
+                ProjectUniverseEntityRef.from_dict(item)
+                for item in data.get("only_right", [])
+                if isinstance(item, dict)
+            ],
+            metric_delta={str(key): int(value) for key, value in data.get("metric_delta", {}).items()},
+            findings=[
+                dict(item) for item in data.get("findings", []) if isinstance(item, dict)
+            ],
+            recommendations=[str(item) for item in data.get("recommendations", [])],
+            sections=[
+                dict(item) for item in data.get("sections", []) if isinstance(item, dict)
+            ],
+            evidence_chain=[
+                dict(item) for item in data.get("evidence_chain", []) if isinstance(item, dict)
+            ],
+            component_delta=dict(data.get("component_delta", {})),
+            risk_points=[
+                dict(item) for item in data.get("risk_points", []) if isinstance(item, dict)
+            ],
+            migration_notes=[str(item) for item in data.get("migration_notes", [])],
+            metadata=dict(data.get("metadata", {})),
         )
 
 
@@ -285,6 +803,26 @@ class RecommendedGraphStart:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> RecommendedGraphStart:
+        return cls(**data)
+
+
+@dataclass(frozen=True)
+class GraphSearchResult:
+    entity_id: str
+    label: str
+    type: str
+    source_path: str | None = None
+    hall_ids: list[str] = field(default_factory=list)
+    evidence_ids: list[str] = field(default_factory=list)
+    degree: int = 0
+    score: float = 0.0
+    matched_fields: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> GraphSearchResult:
         return cls(**data)
 
 
@@ -493,6 +1031,7 @@ class AgentMissionTask:
     confidence: float = 0.0
     created_at: str = ""
     completed_at: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -516,6 +1055,7 @@ class AgentMissionTask:
             confidence=float(data.get("confidence", 0.0)),
             created_at=data.get("created_at", ""),
             completed_at=data.get("completed_at", ""),
+            metadata=dict(data.get("metadata", {})),
         )
 
 

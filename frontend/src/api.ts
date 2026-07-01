@@ -1,21 +1,40 @@
 import type {
   AgentMission,
+  AgentTaskPlan,
+  AgentMissionVisualization,
+  AgentEvalReport,
+  AgentMemory,
   AgentReport,
   AgentStatus,
   AgentTraceEvent,
+  AgentTrustReport,
+  ArchiveEvaluationReport,
   ArchiveJob,
   ArchiveDraft,
   ArchiveHall,
   ArchiveRelation,
   AutonomousMission,
   EvidenceCard,
+  EvaluationHistory,
+  GraphCurationState,
   GraphNeighborhood,
   GraphSearchResult,
   GraphSummary,
+  GraphStoreStatus,
+  GraphWorkspaceReport,
   HybridRagStatus,
+  IngestionDiagnostics,
   MissionGraphOverlay,
   MissionTask,
+  MultimodalInsights,
+  ProjectArchitectureDiffReport,
   ProjectAgentReport,
+  ProjectIntelligenceReport,
+  ProjectKnowledgeUniverse,
+  StressTestReport,
+  SystemConfigCheck,
+  UniverseAgentTask,
+  UniverseExplorationPath,
 } from "./types";
 
 const API_BASE_URL = import.meta.env.VITE_TWINMIND_API_URL ?? "http://127.0.0.1:8000";
@@ -61,6 +80,7 @@ type RawEvidenceCard = {
   line_end?: number | null;
   confidence?: number;
   linked_entities?: string[];
+  metadata?: Record<string, unknown>;
 };
 
 export type ArchiveDraftResult = {
@@ -71,14 +91,33 @@ export type ArchiveDraftResult = {
 
 type UploadArchiveJobResult = {
   archive?: RawArchiveDraft;
+  project_id?: string;
+  metrics?: Record<string, number>;
 };
 
 type AgentReportJobResult = {
   agent_report?: ProjectAgentReport;
 };
 
+type RawGraphMergeCandidate = {
+  id: string;
+  label: string;
+  entity_ids?: string[];
+  created_at?: string;
+};
+
+type RawGraphCurationState = {
+  project_id: string;
+  important_entity_ids?: string[];
+  hidden_relation_ids?: string[];
+  merge_candidates?: RawGraphMergeCandidate[];
+  updated_at?: string;
+};
+
 const DEFAULT_JOB_POLL_TIMEOUT_MS = 1000 * 60 * 6;
 const ARCHIVE_UPLOAD_POLL_TIMEOUT_MS = 1000 * 60 * 30;
+const AGENT_REPORT_POLL_TIMEOUT_MS = 1000 * 60 * 45;
+const RAG_REBUILD_POLL_TIMEOUT_MS = 1000 * 60 * 30;
 
 export type UploadArchiveResult = {
   draft: ArchiveDraft;
@@ -101,6 +140,89 @@ export async function listArchiveIds(): Promise<string[]> {
   }
   const archivesPayload = (await archivesResponse.json()) as { archives?: string[] };
   return archivesPayload.archives ?? [];
+}
+
+export async function fetchKnowledgeUniverse(projectIds: string[] = []): Promise<ProjectKnowledgeUniverse> {
+  const params = new URLSearchParams({
+    link_limit: "80",
+    cluster_limit: "24",
+  });
+  projectIds.forEach((projectId) => params.append("project_ids", projectId));
+  const response = await fetch(`${API_BASE_URL}/api/universe?${params.toString()}`);
+  if (!response.ok) {
+    throw new Error(`Knowledge universe failed: ${await readErrorDetail(response)}`);
+  }
+  return (await response.json()) as ProjectKnowledgeUniverse;
+}
+
+export async function fetchUniversePaths(): Promise<UniverseExplorationPath[]> {
+  const response = await fetch(`${API_BASE_URL}/api/universe/paths`);
+  if (!response.ok) {
+    throw new Error(`Universe paths failed: ${await readErrorDetail(response)}`);
+  }
+  const payload = (await response.json()) as { paths?: UniverseExplorationPath[] };
+  return payload.paths ?? [];
+}
+
+export async function saveUniversePath(payload: {
+  name: string;
+  project_ids: string[];
+  cluster_ids?: string[];
+  link_ids?: string[];
+  notes?: string;
+}): Promise<UniverseExplorationPath> {
+  const response = await fetch(`${API_BASE_URL}/api/universe/paths`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    throw new Error(`Universe path save failed: ${await readErrorDetail(response)}`);
+  }
+  return (await response.json()) as UniverseExplorationPath;
+}
+
+export async function fetchUniverseAgentTasks(): Promise<UniverseAgentTask[]> {
+  const response = await fetch(`${API_BASE_URL}/api/universe/agent-tasks`);
+  if (!response.ok) {
+    throw new Error(`Universe agent tasks failed: ${await readErrorDetail(response)}`);
+  }
+  const payload = (await response.json()) as { tasks?: UniverseAgentTask[] };
+  return payload.tasks ?? [];
+}
+
+export async function runUniverseAgentTasks(payload: {
+  project_ids: string[];
+  max_tasks?: number;
+}): Promise<UniverseAgentTask[]> {
+  const response = await fetch(`${API_BASE_URL}/api/universe/agent-tasks/run`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    throw new Error(`Universe agent tasks run failed: ${await readErrorDetail(response)}`);
+  }
+  const result = (await response.json()) as { tasks?: UniverseAgentTask[] };
+  return result.tasks ?? [];
+}
+
+export async function compareUniverseProjects(
+  leftProjectId: string,
+  rightProjectId: string,
+): Promise<ProjectArchitectureDiffReport> {
+  const response = await fetch(`${API_BASE_URL}/api/universe/compare`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      left_project_id: leftProjectId,
+      right_project_id: rightProjectId,
+    }),
+  });
+  if (!response.ok) {
+    throw new Error(`Universe compare failed: ${await readErrorDetail(response)}`);
+  }
+  return (await response.json()) as ProjectArchitectureDiffReport;
 }
 
 export async function fetchProjectArchive(projectId: string): Promise<ArchiveDraft> {
@@ -138,6 +260,22 @@ export async function fetchAgentStatus(): Promise<AgentStatus> {
   return (await response.json()) as AgentStatus;
 }
 
+export async function fetchGraphStoreStatus(): Promise<GraphStoreStatus> {
+  const response = await fetch(`${API_BASE_URL}/api/graph-store/status`);
+  if (!response.ok) {
+    throw new Error(`Graph store status failed: ${response.status}`);
+  }
+  return (await response.json()) as GraphStoreStatus;
+}
+
+export async function fetchSystemConfigCheck(): Promise<SystemConfigCheck> {
+  const response = await fetch(`${API_BASE_URL}/api/system/config-check`);
+  if (!response.ok) {
+    throw new Error(`System config check failed: ${response.status}`);
+  }
+  return (await response.json()) as SystemConfigCheck;
+}
+
 export async function fetchProjectAgentReport(projectId: string): Promise<ProjectAgentReport | null> {
   const response = await fetch(`${API_BASE_URL}/api/archives/${encodeURIComponent(projectId)}/agent-report`);
   if (response.status === 404) {
@@ -149,6 +287,54 @@ export async function fetchProjectAgentReport(projectId: string): Promise<Projec
   return (await response.json()) as ProjectAgentReport;
 }
 
+export async function fetchProjectIntelligenceReport(projectId: string): Promise<ProjectIntelligenceReport | null> {
+  const response = await fetch(`${API_BASE_URL}/api/archives/${encodeURIComponent(projectId)}/intelligence-report`);
+  if (response.status === 404) {
+    return null;
+  }
+  if (!response.ok) {
+    throw new Error(`Project intelligence report failed: ${await readErrorDetail(response)}`);
+  }
+  return (await response.json()) as ProjectIntelligenceReport;
+}
+
+export async function fetchAgentTaskPlan(projectId: string): Promise<AgentTaskPlan | null> {
+  const response = await fetch(`${API_BASE_URL}/api/archives/${encodeURIComponent(projectId)}/agent-task-plan`);
+  if (response.status === 404) {
+    return null;
+  }
+  if (!response.ok) {
+    throw new Error(`Agent task plan failed: ${await readErrorDetail(response)}`);
+  }
+  return (await response.json()) as AgentTaskPlan;
+}
+
+export async function runProjectIntelligenceReport(projectId: string): Promise<ProjectIntelligenceReport> {
+  const response = await fetch(`${API_BASE_URL}/api/archives/${encodeURIComponent(projectId)}/intelligence-report/run`, {
+    method: "POST",
+  });
+  if (!response.ok) {
+    throw new Error(`Project intelligence report run failed: ${await readErrorDetail(response)}`);
+  }
+  return (await response.json()) as ProjectIntelligenceReport;
+}
+
+export async function downloadProjectIntelligenceMarkdown(projectId: string): Promise<string> {
+  const response = await fetch(`${API_BASE_URL}/api/archives/${encodeURIComponent(projectId)}/intelligence-report/markdown`);
+  if (!response.ok) {
+    throw new Error(`Project intelligence markdown failed: ${await readErrorDetail(response)}`);
+  }
+  return response.text();
+}
+
+export async function downloadProjectIntelligencePdf(projectId: string): Promise<Blob> {
+  const response = await fetch(`${API_BASE_URL}/api/archives/${encodeURIComponent(projectId)}/intelligence-report/pdf`);
+  if (!response.ok) {
+    throw new Error(`Project intelligence PDF failed: ${await readErrorDetail(response)}`);
+  }
+  return response.blob();
+}
+
 export async function fetchHybridRagStatus(projectId: string): Promise<HybridRagStatus | null> {
   const response = await fetch(`${API_BASE_URL}/api/archives/${encodeURIComponent(projectId)}/rag-status`);
   if (response.status === 404) {
@@ -158,6 +344,222 @@ export async function fetchHybridRagStatus(projectId: string): Promise<HybridRag
     throw new Error(`Hybrid RAG status failed: ${response.status}`);
   }
   return (await response.json()) as HybridRagStatus;
+}
+
+export async function rebuildHybridRagIndexJob(
+  projectId: string,
+  onProgress?: (progress: number, message: string, projectId?: string | null) => void,
+): Promise<HybridRagStatus | null> {
+  const response = await fetch(
+    `${API_BASE_URL}/api/archives/${encodeURIComponent(projectId)}/rag-status/rebuild-job`,
+    { method: "POST" },
+  );
+  if (!response.ok) {
+    throw new Error(`Hybrid RAG rebuild failed: ${await readErrorDetail(response)}`);
+  }
+  const queuedJob = (await response.json()) as ArchiveJob;
+  await pollArchiveJob(queuedJob.id, onProgress, {
+    timeoutMs: RAG_REBUILD_POLL_TIMEOUT_MS,
+    timeoutMessage: "Hybrid RAG rebuild is still running in the background.",
+  });
+  return fetchHybridRagStatus(projectId);
+}
+
+export async function fetchIngestionDiagnostics(projectId: string): Promise<IngestionDiagnostics | null> {
+  const response = await fetch(`${API_BASE_URL}/api/archives/${encodeURIComponent(projectId)}/diagnostics`);
+  if (response.status === 404) {
+    return null;
+  }
+  if (!response.ok) {
+    throw new Error(`Ingestion diagnostics failed: ${response.status}`);
+  }
+  return (await response.json()) as IngestionDiagnostics;
+}
+
+export async function fetchGraphWorkspaceReport(projectId: string): Promise<GraphWorkspaceReport | null> {
+  const response = await fetch(`${API_BASE_URL}/api/archives/${encodeURIComponent(projectId)}/graph/workspace`);
+  if (response.status === 404) {
+    return null;
+  }
+  if (!response.ok) {
+    throw new Error(`Graph workspace report failed: ${await readErrorDetail(response)}`);
+  }
+  return (await response.json()) as GraphWorkspaceReport;
+}
+
+export async function fetchAgentTrustReport(projectId: string): Promise<AgentTrustReport | null> {
+  const response = await fetch(`${API_BASE_URL}/api/archives/${encodeURIComponent(projectId)}/agent-trust`);
+  if (response.status === 404) {
+    return null;
+  }
+  if (!response.ok) {
+    throw new Error(`Agent trust report failed: ${await readErrorDetail(response)}`);
+  }
+  return (await response.json()) as AgentTrustReport;
+}
+
+export async function fetchAgentEvalReport(projectId: string): Promise<AgentEvalReport | null> {
+  const response = await fetch(`${API_BASE_URL}/api/archives/${encodeURIComponent(projectId)}/agent-eval`);
+  if (response.status === 404) {
+    return null;
+  }
+  if (!response.ok) {
+    throw new Error(`AgentEval report failed: ${await readErrorDetail(response)}`);
+  }
+  return (await response.json()) as AgentEvalReport;
+}
+
+export async function runAgentEvalHarness(
+  projectId: string,
+  payload: {
+    run_evaluation?: boolean;
+    evaluation_limit?: number;
+    run_agent_report?: boolean;
+    agent_llm_mode?: string;
+  } = {},
+): Promise<AgentEvalReport> {
+  const response = await fetch(`${API_BASE_URL}/api/archives/${encodeURIComponent(projectId)}/agent-eval/run`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    throw new Error(`AgentEval harness failed: ${await readErrorDetail(response)}`);
+  }
+  return (await response.json()) as AgentEvalReport;
+}
+
+export async function fetchAgentMemory(projectId: string): Promise<AgentMemory | null> {
+  const response = await fetch(`${API_BASE_URL}/api/archives/${encodeURIComponent(projectId)}/agent-memory`);
+  if (response.status === 404) {
+    return null;
+  }
+  if (!response.ok) {
+    throw new Error(`Agent memory failed: ${await readErrorDetail(response)}`);
+  }
+  return (await response.json()) as AgentMemory;
+}
+
+export async function fetchMultimodalInsights(projectId: string): Promise<MultimodalInsights | null> {
+  const response = await fetch(`${API_BASE_URL}/api/archives/${encodeURIComponent(projectId)}/multimodal`);
+  if (response.status === 404) {
+    return null;
+  }
+  if (!response.ok) {
+    throw new Error(`Multimodal insights failed: ${await readErrorDetail(response)}`);
+  }
+  return (await response.json()) as MultimodalInsights;
+}
+
+export async function fetchArchiveEvaluation(projectId: string): Promise<ArchiveEvaluationReport | null> {
+  const response = await fetch(`${API_BASE_URL}/api/archives/${encodeURIComponent(projectId)}/evaluation`);
+  if (response.status === 404) {
+    return null;
+  }
+  if (!response.ok) {
+    throw new Error(`Archive evaluation failed: ${response.status}`);
+  }
+  return (await response.json()) as ArchiveEvaluationReport;
+}
+
+export async function fetchEvaluationHistory(projectId?: string): Promise<EvaluationHistory> {
+  const params = new URLSearchParams();
+  if (projectId) params.set("project_id", projectId);
+  const suffix = params.toString() ? `?${params.toString()}` : "";
+  const response = await fetch(`${API_BASE_URL}/api/evaluation/history${suffix}`);
+  if (!response.ok) {
+    throw new Error(`Evaluation history failed: ${await readErrorDetail(response)}`);
+  }
+  return (await response.json()) as EvaluationHistory;
+}
+
+export async function runArchiveEvaluation(projectId: string): Promise<ArchiveEvaluationReport> {
+  const response = await fetch(`${API_BASE_URL}/api/archives/${encodeURIComponent(projectId)}/evaluation/run`, {
+    method: "POST",
+  });
+  if (!response.ok) {
+    throw new Error(`Archive evaluation run failed: ${await readErrorDetail(response)}`);
+  }
+  return (await response.json()) as ArchiveEvaluationReport;
+}
+
+export async function fetchStressTestReport(): Promise<StressTestReport | null> {
+  const response = await fetch(`${API_BASE_URL}/api/stress-test/latest`);
+  if (response.status === 404) {
+    return null;
+  }
+  if (!response.ok) {
+    throw new Error(`Stress test report failed: ${await readErrorDetail(response)}`);
+  }
+  return (await response.json()) as StressTestReport;
+}
+
+export async function runStressTest(projectIds: string[]): Promise<StressTestReport> {
+  const response = await fetch(`${API_BASE_URL}/api/stress-test/run`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      project_ids: projectIds,
+      run_evaluation: false,
+      evaluation_limit: 6,
+    }),
+  });
+  if (!response.ok) {
+    throw new Error(`Stress test run failed: ${await readErrorDetail(response)}`);
+  }
+  return (await response.json()) as StressTestReport;
+}
+
+export async function fetchGraphCuration(projectId: string): Promise<GraphCurationState> {
+  const response = await fetch(`${API_BASE_URL}/api/archives/${encodeURIComponent(projectId)}/graph-curation`);
+  if (!response.ok) {
+    throw new Error(`Graph curation load failed: ${response.status}`);
+  }
+  return transformGraphCuration((await response.json()) as RawGraphCurationState);
+}
+
+export async function saveGraphCuration(
+  projectId: string,
+  state: GraphCurationState,
+): Promise<GraphCurationState> {
+  const response = await fetch(`${API_BASE_URL}/api/archives/${encodeURIComponent(projectId)}/graph-curation`, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      important_entity_ids: state.importantEntityIds,
+      hidden_relation_ids: state.hiddenRelationIds,
+      merge_candidates: state.mergeCandidates.map((candidate) => ({
+        id: candidate.id,
+        label: candidate.label,
+        entity_ids: candidate.entityIds,
+        created_at: candidate.createdAt,
+      })),
+    }),
+  });
+  if (!response.ok) {
+    throw new Error(`Graph curation save failed: ${response.status}`);
+  }
+  return transformGraphCuration((await response.json()) as RawGraphCurationState);
+}
+
+export async function applyGraphCurationSuggestions(projectId: string): Promise<GraphCurationState> {
+  const response = await fetch(`${API_BASE_URL}/api/archives/${encodeURIComponent(projectId)}/graph-curation/apply-suggestions`, {
+    method: "POST",
+  });
+  if (!response.ok) {
+    throw new Error(`Graph curation suggestions failed: ${await readErrorDetail(response)}`);
+  }
+  return transformGraphCuration((await response.json()) as RawGraphCurationState);
+}
+
+export async function fetchProjectVersionHistory(projectId: string): Promise<{ events: Array<Record<string, unknown>>; metrics: Record<string, number> }> {
+  const response = await fetch(`${API_BASE_URL}/api/archives/${encodeURIComponent(projectId)}/versions`);
+  if (!response.ok) {
+    throw new Error(`Version history failed: ${await readErrorDetail(response)}`);
+  }
+  return (await response.json()) as { events: Array<Record<string, unknown>>; metrics: Record<string, number> };
 }
 
 export async function runProjectAgentReport(
@@ -180,7 +582,7 @@ export async function runProjectAgentReportJob(
   scanProfile: string,
   onProgress?: (progress: number, message: string, projectId?: string | null) => void,
 ): Promise<ProjectAgentReport> {
-  const params = new URLSearchParams({ scan_profile: scanProfile });
+  const params = new URLSearchParams({ scan_profile: scanProfile, llm_mode: "fast" });
   const response = await fetch(
     `${API_BASE_URL}/api/archives/${encodeURIComponent(projectId)}/agent-report/run-job?${params.toString()}`,
     { method: "POST" },
@@ -189,9 +591,14 @@ export async function runProjectAgentReportJob(
     throw new Error(`Agent report job failed: ${response.status}`);
   }
   const queuedJob = (await response.json()) as ArchiveJob;
-  const job = await pollArchiveJob(queuedJob.id, onProgress);
+  const job = await pollArchiveJob(queuedJob.id, onProgress, {
+    timeoutMs: AGENT_REPORT_POLL_TIMEOUT_MS,
+    timeoutMessage: "Agent report is still running in the background.",
+  });
   const result = (job.result ?? {}) as AgentReportJobResult;
   if (!result.agent_report) {
+    const savedReport = await fetchProjectAgentReport(projectId);
+    if (savedReport) return savedReport;
     throw new Error(job.error ?? "Agent report job finished without a report.");
   }
   return result.agent_report;
@@ -244,11 +651,17 @@ export async function uploadProjectArchive(
       "Archive job is still running after 30 minutes. It may finish on the backend; check the archive switcher later.",
   });
   const payload = (finishedJob.result ?? {}) as UploadArchiveJobResult;
-  if (!payload.archive) {
-    throw new Error(finishedJob.error ?? "Archive job finished without an archive.");
+  if (payload.archive) {
+    return {
+      draft: transformArchiveDraft(payload.archive),
+    };
+  }
+  const projectId = payload.project_id ?? finishedJob.project_id;
+  if (!projectId) {
+    throw new Error(finishedJob.error ?? "Archive job finished without an archive id.");
   }
   return {
-    draft: transformArchiveDraft(payload.archive),
+    draft: await fetchProjectArchive(projectId),
   };
 }
 
@@ -403,6 +816,14 @@ export async function fetchAgentMissionTrace(missionId: string): Promise<AgentTr
   return payload.trace_events;
 }
 
+export async function fetchAgentMissionVisualization(missionId: string): Promise<AgentMissionVisualization> {
+  const response = await fetch(`${API_BASE_URL}/api/agent-missions/${encodeURIComponent(missionId)}/visualization`);
+  if (!response.ok) {
+    throw new Error(`Agent mission visualization failed: ${await readErrorDetail(response)}`);
+  }
+  return (await response.json()) as AgentMissionVisualization;
+}
+
 export async function updateAgentMissionStatus(
   missionId: string,
   action: "pause" | "resume" | "stop",
@@ -431,12 +852,37 @@ export async function pollArchiveJob(
     const job = (await response.json()) as ArchiveJob;
     onProgress?.(job.progress, job.message, job.project_id);
     if (job.status === "complete") return job;
+    if (job.status === "cancelled") {
+      throw new Error(job.error || job.message || "Archive job was cancelled.");
+    }
     if (job.status === "failed") {
       throw new Error(job.error || job.message || "Archive job failed.");
     }
     await delay(800);
   }
   throw new Error(options.timeoutMessage ?? "Archive job timed out.");
+}
+
+export async function listArchiveJobs(projectId?: string): Promise<ArchiveJob[]> {
+  const params = new URLSearchParams();
+  if (projectId) params.set("project_id", projectId);
+  const suffix = params.toString() ? `?${params.toString()}` : "";
+  const response = await fetch(`${API_BASE_URL}/api/jobs${suffix}`);
+  if (!response.ok) {
+    throw new Error(`Archive jobs failed: ${await readErrorDetail(response)}`);
+  }
+  const payload = (await response.json()) as { jobs?: ArchiveJob[] };
+  return payload.jobs ?? [];
+}
+
+export async function cancelArchiveJob(jobId: string): Promise<ArchiveJob> {
+  const response = await fetch(`${API_BASE_URL}/api/jobs/${encodeURIComponent(jobId)}/cancel`, {
+    method: "POST",
+  });
+  if (!response.ok) {
+    throw new Error(`Archive job cancel failed: ${await readErrorDetail(response)}`);
+  }
+  return (await response.json()) as ArchiveJob;
 }
 
 function delay(ms: number): Promise<void> {
@@ -481,8 +927,23 @@ function transformArchiveDraft(raw: RawArchiveDraft): ArchiveDraft {
       transformRelation(relation, entityById, hallIndex),
     ),
     evidenceCards: evidenceCards.map((card) =>
-      transformEvidenceCard(card, hallIndex),
+      transformEvidenceCard(card, hallIndex, raw.project_id),
     ),
+  };
+}
+
+function transformGraphCuration(raw: RawGraphCurationState): GraphCurationState {
+  return {
+    projectId: raw.project_id,
+    importantEntityIds: raw.important_entity_ids ?? [],
+    hiddenRelationIds: raw.hidden_relation_ids ?? [],
+    mergeCandidates: (raw.merge_candidates ?? []).map((candidate) => ({
+      id: candidate.id,
+      label: candidate.label,
+      entityIds: candidate.entity_ids ?? [],
+      createdAt: candidate.created_at ?? "",
+    })),
+    updatedAt: raw.updated_at ?? "",
   };
 }
 
@@ -544,23 +1005,30 @@ function transformRelation(
 function transformEvidenceCard(
   card: RawEvidenceCard,
   hallIndex: ReturnType<typeof createHallIndex>,
+  projectId: string,
 ): EvidenceCard {
   const candidateHalls = unique(
     card.linked_entities?.flatMap((entityId) => hallIndex.hallsByEntityId.get(entityId) ?? []) ?? [],
   );
   const hall = chooseEvidenceHall(card, candidateHalls, hallIndex);
+  const assetId = typeof card.metadata?.asset_id === "string" ? card.metadata.asset_id : "";
   return {
     id: card.id,
     title: card.title,
     titleZh: translateEvidenceTitle(card.title),
     sourcePath: card.source_path,
     sourceType: card.source_type,
+    assetUrl: assetId
+      ? `${API_BASE_URL}/api/archives/${encodeURIComponent(projectId)}/evidence-assets/${encodeURIComponent(assetId)}`
+      : null,
+    modality: typeof card.metadata?.modality === "string" ? card.metadata.modality : card.source_type,
     snippet: card.snippet,
     snippetZh: translateEvidenceSnippet(card.snippet),
     lineRange: lineRange(card),
     confidence: card.confidence ?? 1,
     hall,
     hallIds: candidateHalls.length ? candidateHalls : [hall],
+    metadata: card.metadata ?? {},
   };
 }
 

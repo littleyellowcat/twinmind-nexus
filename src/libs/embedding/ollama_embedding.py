@@ -64,9 +64,14 @@ class OllamaEmbedding(BaseEmbedding):
         """
         self.model = settings.embedding.model
         
-        # Base URL: explicit > env var > default
+        configured_base_url = getattr(settings.embedding, "base_url", None)
+        if not isinstance(configured_base_url, str) or not configured_base_url.strip():
+            configured_base_url = None
+
+        # Base URL: explicit > settings.yaml > env var > default
         self.base_url = (
             base_url 
+            or configured_base_url
             or os.environ.get("OLLAMA_BASE_URL") 
             or self.DEFAULT_BASE_URL
         )
@@ -116,64 +121,62 @@ class OllamaEmbedding(BaseEmbedding):
                 "Install with: pip install httpx"
             ) from e
         
-        # Prepare API request
-        url = f"{self.base_url}/api/embeddings"
-        
-        embeddings: List[List[float]] = []
-        
-        # Process each text individually (Ollama API expects single prompt)
-        for text in texts:
-            payload = {
-                "model": self.model,
-                "prompt": text,
-            }
-            
-            try:
-                with httpx.Client(timeout=self.timeout) as client:
-                    response = client.post(url, json=payload)
-                    response.raise_for_status()
-                    
-                    result = response.json()
-                    
-                    # Extract embedding from response
-                    if "embedding" not in result:
-                        raise OllamaEmbeddingError(
-                            f"Unexpected response format from Ollama API. "
-                            f"Expected 'embedding' field but got: {list(result.keys())}"
-                        )
-                    
-                    embeddings.append(result["embedding"])
-                    
-            except httpx.HTTPStatusError as e:
-                # HTTP error (4xx, 5xx)
-                raise OllamaEmbeddingError(
-                    f"Ollama API request failed with status {e.response.status_code}. "
-                    f"Ensure Ollama is running and model '{self.model}' is available."
-                ) from e
-            except httpx.ConnectError as e:
-                # Connection error (server not reachable)
-                raise OllamaEmbeddingError(
-                    f"Failed to connect to Ollama server at {self.base_url}. "
-                    f"Ensure Ollama is running (try: ollama serve)"
-                ) from e
-            except httpx.TimeoutException as e:
-                # Request timeout
-                raise OllamaEmbeddingError(
-                    f"Ollama API request timed out after {self.timeout}s. "
-                    f"The model may be loading or the request is too large."
-                ) from e
-            except httpx.RequestError as e:
-                # Other request errors
-                raise OllamaEmbeddingError(
-                    f"Ollama API request failed: {str(e)}"
-                ) from e
-            except (KeyError, ValueError, TypeError) as e:
-                # JSON parsing or data extraction error
-                raise OllamaEmbeddingError(
-                    f"Failed to parse Ollama API response: {str(e)}"
-                ) from e
-        
-        return embeddings
+        url = f"{self.base_url.rstrip('/')}/api/embed"
+        payload = {
+            "model": self.model,
+            "input": texts,
+        }
+
+        try:
+            with httpx.Client(timeout=self.timeout) as client:
+                response = client.post(url, json=payload)
+                response.raise_for_status()
+
+                result = response.json()
+                embeddings = self._extract_embeddings(result)
+                if len(embeddings) != len(texts):
+                    raise OllamaEmbeddingError(
+                        "Unexpected response format from Ollama API. "
+                        f"Expected {len(texts)} embeddings but got {len(embeddings)}."
+                    )
+                return embeddings
+
+        except httpx.HTTPStatusError as e:
+            raise OllamaEmbeddingError(
+                f"Ollama API request failed with status {e.response.status_code}. "
+                f"Ensure Ollama is running and model '{self.model}' is available."
+            ) from e
+        except httpx.ConnectError as e:
+            raise OllamaEmbeddingError(
+                f"Failed to connect to Ollama server at {self.base_url}. "
+                f"Ensure Ollama is running (try: ollama serve)"
+            ) from e
+        except httpx.TimeoutException as e:
+            raise OllamaEmbeddingError(
+                f"Ollama API request timed out after {self.timeout}s. "
+                f"The model may be loading or the request is too large."
+            ) from e
+        except httpx.RequestError as e:
+            raise OllamaEmbeddingError(
+                f"Ollama API request failed: {str(e)}"
+            ) from e
+        except OllamaEmbeddingError:
+            raise
+        except (KeyError, ValueError, TypeError) as e:
+            raise OllamaEmbeddingError(
+                f"Failed to parse Ollama API response: {str(e)}"
+            ) from e
+
+    @staticmethod
+    def _extract_embeddings(result: Dict[str, Any]) -> List[List[float]]:
+        if "embeddings" in result and isinstance(result["embeddings"], list):
+            return result["embeddings"]
+        if "embedding" in result and isinstance(result["embedding"], list):
+            return [result["embedding"]]
+        raise OllamaEmbeddingError(
+            "Unexpected response format from Ollama API. "
+            f"Expected 'embeddings' field but got: {list(result.keys())}"
+        )
     
     def get_dimension(self) -> int:
         """Get the dimensionality of embeddings produced by this provider.

@@ -6,27 +6,30 @@
 # LLM Configuration
 # =============================================================================
 llm:
-  provider: "openai"  # Options: openai, azure, ollama, deepseek
-  model: "gpt-4o"
-  deployment_name: "gpt-4o"
+  provider: "deepseek"  # Options: openai, azure, ollama, deepseek
+  model: "deepseek-v4-pro"
+  base_url: "https://api.deepseek.com"
+  deployment_name: "deepseek-v4-pro"
   azure_endpoint: "https://YOUR_ENDPOINT.openai.azure.com/"
   api_version: "2024-02-15-preview"
-  api_key: "YOUR_API_KEY_HERE"
-  temperature: 0.0
-  max_tokens: 4096
+  api_key: "YOUR_DEEPSEEK_API_KEY_HERE"
+  temperature: 0.2
+  max_tokens: 2000
+  timeout_seconds: 300
 
 # =============================================================================
 # Embedding Configuration
 # =============================================================================
 embedding:
-  provider: "openai"  # Options: openai, azure, ollama
-  model: "text-embedding-ada-002"
-  dimensions: 1536  # text-embedding-ada-002 固定维度 (不传递给API, 仅用于验证)
+  provider: "ollama"  # Options: openai, azure, ollama
+  model: "nomic-embed-text-v2-moe"
+  dimensions: 768  # nomic-embed-text-v2-moe commonly uses 768-dimensional vectors
+  base_url: "http://localhost:11434"
   # Azure-compatible settings (azure_endpoint triggers Azure compat mode):
   azure_endpoint: "https://YOUR_ENDPOINT.openai.azure.com/"
   deployment_name: "text-embedding-ada-002"
   api_version: "2024-02-15-preview"
-  api_key: "YOUR_API_KEY_HERE"
+  api_key: ""
   # OpenAI-specific settings (if provider is openai):
   # api_key: "YOUR_API_KEY_HERE"
 
@@ -35,15 +38,15 @@ embedding:
 # =============================================================================
 vision_llm:
   enabled: true  # Set to true to enable vision capabilities
-  provider: "openai"  # Options: openai, azure, ollama
-  model: "gpt-4o"  # Options: gpt-4o, gpt-4-vision-preview (OpenAI), llava (Ollama)
+  provider: "ollama"  # Options: openai, azure, ollama
+  model: "qwen2.5vl:7b"  # Local vision model for project screenshots, diagrams, and UI images
   # Azure-compatible settings (azure_endpoint triggers Azure compat mode):
   azure_endpoint: "https://YOUR_ENDPOINT.openai.azure.com/"
   deployment_name: "gpt-4o"
   api_version: "2024-02-15-preview"
-  api_key: "YOUR_API_KEY_HERE"
+  api_key: ""
   # Ollama-specific settings (if provider is ollama):
-  # base_url: "http://localhost:11434"
+  base_url: "http://localhost:11434"
   max_image_size: 2048  # Max dimension (width/height) for image compression
 
 # =============================================================================
@@ -53,6 +56,18 @@ vector_store:
   provider: "chroma"  # Options: chroma, qdrant, pinecone
   persist_directory: "./data/db/chroma"
   collection_name: "knowledge_hub"
+
+# =============================================================================
+# TwinMind Archive Graph Store Configuration
+# =============================================================================
+project_archive:
+  graph_store:
+    provider: "sqlite"  # Options: sqlite, kuzu, neo4j
+    # Neo4j production mode settings:
+    uri: "bolt://localhost:7687"
+    username: "neo4j"
+    password: ""
+    database: "neo4j"
 
 # =============================================================================
 # Retrieval Configuration
@@ -100,12 +115,12 @@ ingestion:
   chunk_overlap: 200
   splitter: "recursive"  # Options: recursive, semantic, fixed_length
   batch_size: 100
-  
+
   # Chunk Refiner Configuration (C5)
   chunk_refiner:
     use_llm: true  # Set to true to enable LLM-based refinement (requires LLM config)
     # When use_llm is false or LLM call fails, falls back to rule-based refinement
-  
+
   # Metadata Enricher Configuration (C6)
   metadata_enricher:
     use_llm: true  # Set to true to enable LLM-based enrichment (requires LLM config)

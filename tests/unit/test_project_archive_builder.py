@@ -1,8 +1,8 @@
 from pathlib import Path
 
-from src.project_archive.archive_builder import ArchiveBuilder
+from src.project_archive.archive_builder import ArchiveBuilder, _build_halls
 from src.project_archive.graph_store import SQLiteGraphStore
-
+from src.project_archive.types import ProjectEntity
 
 FIXTURE = Path("tests/fixtures/project_archive_sample")
 
@@ -74,3 +74,80 @@ def test_archive_builder_falls_back_to_generic_adapter_when_adapter_errors(tmp_p
 
     assert python_file_entities
     assert fallback_evidence
+
+
+def test_archive_builder_assigns_manifest_and_retrieval_files_to_halls():
+    entities = [
+        ProjectEntity(id="file:pom", type="File", name="pom.xml", source_path="pom.xml"),
+        ProjectEntity(id="file:go", type="File", name="go.mod", source_path="go.mod"),
+        ProjectEntity(
+            id="file:search",
+            type="File",
+            name="src/search/vector_index.cpp",
+            source_path="src/search/vector_index.cpp",
+        ),
+        ProjectEntity(
+            id="config:settings",
+            type="Config",
+            name="embedding.provider",
+            source_path="config/settings.yaml",
+        ),
+    ]
+
+    halls_by_id = {hall.id: hall for hall in _build_halls(entities)}
+
+    assert "file:search" in halls_by_id["hall_retrieval"].entity_ids
+    assert "config:settings" in halls_by_id["hall_config"].entity_ids
+    assert "file:pom" in halls_by_id["hall_config"].entity_ids
+    assert "file:pom" in halls_by_id["hall_dependencies"].entity_ids
+    assert "file:go" in halls_by_id["hall_dependencies"].entity_ids
+
+
+def test_archive_builder_extracts_multilanguage_code_and_semantic_edges(tmp_path):
+    project_root = tmp_path / "mixed"
+    java_dir = project_root / "src" / "main" / "java" / "demo"
+    ts_dir = project_root / "frontend" / "src"
+    go_dir = project_root / "cmd" / "server"
+    rust_dir = project_root / "src"
+    cpp_dir = project_root / "src" / "native"
+    for directory in [java_dir, ts_dir, go_dir, rust_dir, cpp_dir]:
+        directory.mkdir(parents=True, exist_ok=True)
+    (java_dir / "UserService.java").write_text(
+        "package demo;\n"
+        "import java.util.List;\n"
+        "class UserService { User getUser(String id) { return repo.findById(id); } }\n",
+        encoding="utf-8",
+    )
+    (ts_dir / "App.ts").write_text(
+        'import React from "react";\n'
+        "export interface Props { id: string }\n"
+        "export function SearchPanel(){ return fetchData(); }\n",
+        encoding="utf-8",
+    )
+    (go_dir / "main.go").write_text(
+        'package main\nimport "fmt"\nfunc main(){ fmt.Println("hi") }\n',
+        encoding="utf-8",
+    )
+    (rust_dir / "main.rs").write_text(
+        "use std::fmt;\nstruct User {}\nfn main() {}\n",
+        encoding="utf-8",
+    )
+    (cpp_dir / "vector_index.cpp").write_text(
+        "#include <vector>\nnamespace native { struct SearchResult {}; }\n",
+        encoding="utf-8",
+    )
+
+    graph_store = SQLiteGraphStore(tmp_path / "graph.db")
+    draft = ArchiveBuilder(graph_store=graph_store).build(
+        project_root=project_root,
+        project_id="mixed",
+        scan_profile="full",
+    )
+
+    names = {entity.name for entity in draft.entities}
+    types = {entity.type for entity in draft.entities}
+    relation_types = {relation.type for relation in draft.relations}
+
+    assert {"UserService", "Props", "SearchPanel", "main", "User", "SearchResult"} <= names
+    assert {"Class", "Interface", "Function", "Struct", "EntryPoint", "ServiceBoundary"} <= types
+    assert {"IMPORTS", "DEPENDS_ON", "CALLS", "DECLARES_ENTRYPOINT", "BELONGS_TO_MODULE", "BELONGS_TO_BOUNDARY"} <= relation_types

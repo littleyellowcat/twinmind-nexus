@@ -8,6 +8,7 @@ from src.project_archive.types import (
     GraphExplorerNode,
     GraphExplorerRelation,
     GraphNeighborhood,
+    GraphSearchResult,
     GraphSummary,
     ProjectArchiveDraft,
     ProjectEntity,
@@ -106,6 +107,79 @@ def build_graph_summary(draft: ProjectArchiveDraft) -> GraphSummary:
             ),
         ),
     )
+
+
+def search_graph_entities(
+    draft: ProjectArchiveDraft,
+    query: str,
+    limit: int = 20,
+) -> list[GraphSearchResult]:
+    """Search archive entities by name, type, path, id, and attached evidence."""
+
+    normalized_query = query.strip().lower()
+    if not normalized_query:
+        return []
+
+    safe_limit = max(1, min(50, int(limit)))
+    entity_by_id = {entity.id: entity for entity in draft.entities}
+    hall_ids_by_entity = _hall_ids_by_entity(draft)
+    degrees = _degrees(draft.relations, entity_by_id)
+    evidence_by_entity = _evidence_by_entity(draft)
+    results: list[GraphSearchResult] = []
+
+    for entity in draft.entities:
+        matched_fields: list[str] = []
+        weighted_score = 0.0
+        fields = {
+            "name": entity.name,
+            "type": entity.type,
+            "source_path": entity.source_path or "",
+            "id": entity.id,
+        }
+        for field, value in fields.items():
+            lower_value = value.lower()
+            if normalized_query in lower_value:
+                matched_fields.append(field)
+                weighted_score += _field_weight(field, lower_value, normalized_query)
+
+        for card in evidence_by_entity.get(entity.id, []):
+            evidence_values = {
+                "evidence_title": card.title,
+                "evidence_path": card.source_path,
+                "evidence_snippet": card.snippet,
+            }
+            for field, value in evidence_values.items():
+                if normalized_query in value.lower():
+                    matched_fields.append(field)
+                    weighted_score += 6.0 if field != "evidence_snippet" else 2.0
+
+        if not matched_fields:
+            continue
+
+        degree = degrees.get(entity.id, 0)
+        results.append(
+            GraphSearchResult(
+                entity_id=entity.id,
+                label=entity.name,
+                type=entity.type,
+                source_path=entity.source_path,
+                hall_ids=hall_ids_by_entity.get(entity.id, []),
+                evidence_ids=list(entity.evidence_ids),
+                degree=degree,
+                score=weighted_score + float(degree) * 0.35,
+                matched_fields=_ordered_unique(matched_fields),
+            )
+        )
+
+    return sorted(
+        results,
+        key=lambda result: (
+            -result.score,
+            -result.degree,
+            result.label.lower(),
+            result.entity_id,
+        ),
+    )[:safe_limit]
 
 
 def build_graph_neighborhood(
@@ -420,6 +494,29 @@ def _evidence_ids(
     for relation in relations:
         evidence_ids.extend(relation.evidence_ids)
     return _ordered_unique(evidence_ids)
+
+
+def _evidence_by_entity(draft: ProjectArchiveDraft):
+    evidence_by_entity: dict[str, list] = {}
+    for card in draft.evidence_cards:
+        for entity_id in card.linked_entities:
+            evidence_by_entity.setdefault(entity_id, []).append(card)
+    return evidence_by_entity
+
+
+def _field_weight(field: str, value: str, query: str) -> float:
+    if value == query:
+        return 24.0
+    if value.rsplit("/", 1)[-1] == query:
+        return 18.0
+    if value.startswith(query):
+        return 14.0
+    return {
+        "name": 10.0,
+        "source_path": 8.0,
+        "type": 5.0,
+        "id": 4.0,
+    }.get(field, 3.0)
 
 
 def _ordered_unique(items: list[str]) -> list[str]:

@@ -28,6 +28,8 @@ MISSION_ID_GLOB_CHARS = {"*", "?", "[", "]", "{", "}"}
 MAX_THOUGHT_SUMMARY_CHARS = 240
 TERMINAL_MISSION_STATUSES = {"complete", "partial", "failed", "stopped", "cancelled"}
 INTERRUPTED_MISSION_STATUSES = {"stopped", "cancelled"}
+JSON_OBJECT_RESPONSE_FORMAT = {"type": "json_object"}
+ACTION_SELECTION_MAX_TOKENS = 700
 
 
 @dataclass(frozen=True)
@@ -41,7 +43,7 @@ TASK_TEMPLATES = [
     _TaskTemplate(
         task_type="find_entry_points",
         objective="Find likely entry points and high-signal graph starts.",
-        allowed_tools=["graph_summary", "list_halls", "graph_search"],
+        allowed_tools=["graph_summary", "list_halls", "graph_search", "hybrid_search"],
     ),
     _TaskTemplate(
         task_type="map_archive_halls",
@@ -51,17 +53,17 @@ TASK_TEMPLATES = [
     _TaskTemplate(
         task_type="inspect_core_entities",
         objective="Inspect core entities related to the mission goal.",
-        allowed_tools=["graph_search", "inspect_entity", "graph_neighborhood"],
+        allowed_tools=["graph_search", "hybrid_search", "inspect_entity", "graph_neighborhood"],
     ),
     _TaskTemplate(
         task_type="collect_architecture_evidence",
         objective="Collect evidence cards for architecture claims.",
-        allowed_tools=["graph_neighborhood", "get_evidence"],
+        allowed_tools=["graph_neighborhood", "hybrid_search", "get_evidence"],
     ),
     _TaskTemplate(
         task_type="summarize_architecture",
         objective="Summarize graph-grounded architecture findings.",
-        allowed_tools=["graph_summary", "get_evidence"],
+        allowed_tools=["graph_summary", "hybrid_search", "get_evidence"],
     ),
 ]
 
@@ -80,7 +82,9 @@ def plan_agent_mission(
     mission_id = str(uuid4())
     effective_max_tasks = max(0, int(max_tasks))
     effective_max_steps = max(1, int(max_steps_per_task))
-    effective_max_tool_calls = max(1, int(max_tool_calls))
+    requested_tool_calls = max(1, int(max_tool_calls))
+    planned_tool_calls = effective_max_tasks * min(effective_max_steps, 3)
+    effective_max_tool_calls = max(requested_tool_calls, planned_tool_calls + effective_max_tasks)
     selected_templates = TASK_TEMPLATES[:effective_max_tasks]
     created_at = utc_now()
     seed_entity_ids = _seed_entity_ids(draft)
@@ -94,8 +98,19 @@ def plan_agent_mission(
             status="pending",
             allowed_tools=list(template.allowed_tools),
             max_steps=effective_max_steps,
-            input_entity_ids=seed_entity_ids[:3],
+            input_entity_ids=_task_seed_entity_ids(
+                seed_entity_ids,
+                task_type=template.task_type,
+                order=index,
+            ),
             created_at=created_at,
+            metadata={
+                "planner": {
+                    "order": index,
+                    "strategy": "architecture_graph_react",
+                    "allowed_tools": list(template.allowed_tools),
+                }
+            },
         )
         for index, template in enumerate(selected_templates, start=1)
     ]
@@ -110,9 +125,27 @@ def plan_agent_mission(
             max_tasks=effective_max_tasks,
             max_steps_per_task=effective_max_steps,
             max_tool_calls=effective_max_tool_calls,
+            timeout_seconds=max(180, effective_max_tool_calls * 18),
         ),
         tasks=tasks,
         metadata={
+            "agent_loop": {
+                "pattern": "planner_react_critic_retry",
+                "planner": "deterministic_task_templates",
+                "tool_selection": "llm_or_deterministic_fallback",
+                "critic": "evidence_verifier",
+                "memory": "mission_scoped_entity_evidence_relation_ids",
+            },
+            "task_queue": [
+                {
+                    "id": task.id,
+                    "task_type": task.task_type,
+                    "objective": task.objective,
+                    "allowed_tools": list(task.allowed_tools),
+                    "status": task.status,
+                }
+                for task in tasks
+            ],
             "draft_metrics": {
                 "halls": len(draft.halls),
                 "entities": len(draft.entities),
@@ -124,7 +157,7 @@ def plan_agent_mission(
 
 
 def _parse_action_response(content: str) -> tuple[str, str, dict[str, object], bool]:
-    payload = json.loads(content, parse_constant=_reject_json_constant)
+    payload = json.loads(_repair_json_content(content), parse_constant=_reject_json_constant)
     if not isinstance(payload, dict):
         raise ValueError("LLM action response must be a JSON object.")
 
@@ -160,6 +193,24 @@ def _parse_action_response(content: str) -> tuple[str, str, dict[str, object], b
 
 def _reject_json_constant(value: str) -> None:
     raise ValueError(f"Invalid JSON constant: {value}")
+
+
+def _repair_json_content(content: str) -> str:
+    text = content.strip()
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].startswith("```"):
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+    if text.startswith("{") and text.endswith("}"):
+        return text
+    start = text.find("{")
+    end = text.rfind("}")
+    if start >= 0 and end > start:
+        return text[start:end + 1]
+    return text
 
 
 def _validate_llm_tool_input(
@@ -323,13 +374,20 @@ def _action_messages(
             },
             "stop": False,
         },
+        "strict_output_rules": [
+            "Return one json object only.",
+            "Do not wrap the JSON object in Markdown or a string.",
+            "Choose a tool from allowed_tools.",
+            "Use project_id exactly as provided.",
+            'Example json output: {"thought_summary":"Use graph summary","action":{"tool":"graph_summary","input":{"project_id":"PROJECT_ID"}},"stop":false}.',
+        ],
     }
     return [
         Message(
             role="system",
             content=(
                 "Select the next graph-grounded tool call for the mission. "
-                "Return JSON only, with no Markdown fences. Do not include "
+                "Return json only, with no Markdown fences. Do not include "
                 "hidden reasoning or chain-of-thought; at most include a short "
                 "thought_summary."
             ),
@@ -556,6 +614,13 @@ class AgentMissionRuntime:
         trace_events = list(running.trace_events)
         sequence = len(trace_events) + 1
         tool_calls_used = 0
+        agent_memory: dict[str, list[str]] = {
+            "entity_ids": [],
+            "evidence_ids": [],
+            "relation_ids": [],
+            "tool_names": [],
+        }
+        critic_reviews: list[dict[str, Any]] = []
         started_monotonic = monotonic()
         timeout_seconds = max(0, int(running.budget.timeout_seconds))
 
@@ -616,6 +681,16 @@ class AgentMissionRuntime:
                     default_tool_input=default_tool_input,
                     trace_events=trace_events,
                 )
+                selection_metadata = {
+                    **selection_metadata,
+                    "budget": {
+                        "tool_calls_used_before": tool_calls_used,
+                        "max_tool_calls": running.budget.max_tool_calls,
+                        "task_steps_used_before": task_trace_count,
+                        "task_max_steps": task.max_steps,
+                    },
+                    "memory": _memory_summary(agent_memory),
+                }
                 interrupted = self._interrupted_mission(running.id)
                 if interrupted is not None:
                     return interrupted
@@ -673,6 +748,7 @@ class AgentMissionRuntime:
                     task_evidence_ids.extend(result.evidence_ids)
                     task_entity_ids.extend(result.entity_ids)
                     task_relation_ids.extend(result.relation_ids)
+                    _remember(agent_memory, result)
                 except Exception as exc:  # pragma: no cover - defensive trace path.
                     errors.append(str(exc))
                     trace_events.append(
@@ -699,18 +775,158 @@ class AgentMissionRuntime:
                 status = "timeout"
             if errors and findings:
                 status = "partial"
-            completed_tasks.append(
-                replace(
-                    task,
-                    status=status,
-                    steps_used=task_trace_count,
-                    output_entity_ids=_unique(task_entity_ids),
-                    evidence_ids=_unique(task_evidence_ids),
-                    findings=findings,
-                    confidence=0.8 if task_evidence_ids else 0.45,
-                    completed_at=utc_now(),
-                    created_at=task.created_at or started_at,
+            findings = _backfill_finding_evidence(findings, task_evidence_ids)
+            provisional_task = replace(
+                task,
+                status=status,
+                steps_used=task_trace_count,
+                output_entity_ids=_unique(task_entity_ids),
+                evidence_ids=_unique(task_evidence_ids),
+                findings=findings,
+                confidence=0.8 if task_evidence_ids else 0.45,
+                completed_at=utc_now(),
+                created_at=task.created_at or started_at,
+            )
+            critic_result = self.verifier.verify_task(provisional_task, draft)
+            retry_performed = False
+            retry_reason = ""
+            if (
+                critic_result.status == "uncertain"
+                and not timed_out
+                and tool_calls_used < running.budget.max_tool_calls
+                and task_trace_count < task.max_steps
+            ):
+                retry_call = self._critic_retry_call(
+                    task=task,
+                    mission=running,
+                    agent_memory=agent_memory,
                 )
+                if retry_call is not None:
+                    retry_tool_name, retry_tool_input = retry_call
+                    retry_reason = "critic_uncertain"
+                    event_started_at = utc_now()
+                    tool_calls_used += 1
+                    try:
+                        retry_result = self.tool_registry.execute(
+                            retry_tool_name,
+                            retry_tool_input,
+                        )
+                        retry_metadata = {
+                            "selection": "critic_retry",
+                            "retry_reason": retry_reason,
+                            "budget": {
+                                "tool_calls_used_before": tool_calls_used - 1,
+                                "max_tool_calls": running.budget.max_tool_calls,
+                                "task_steps_used_before": task_trace_count,
+                                "task_max_steps": task.max_steps,
+                            },
+                            "memory": _memory_summary(agent_memory),
+                        }
+                        trace_events.append(
+                            AgentTraceEvent(
+                                id=str(uuid4()),
+                                mission_id=running.id,
+                                task_id=task.id,
+                                sequence=sequence,
+                                event_type="action",
+                                tool_name=retry_tool_name,
+                                tool_input=dict(retry_tool_input),
+                                observation_summary=retry_result.summary,
+                                evidence_ids=list(retry_result.evidence_ids),
+                                entity_ids=list(retry_result.entity_ids),
+                                relation_ids=list(retry_result.relation_ids),
+                                started_at=event_started_at,
+                                completed_at=utc_now(),
+                                metadata=retry_metadata,
+                            )
+                        )
+                        findings.append(
+                            {
+                                "summary": retry_result.summary,
+                                "tool_name": retry_tool_name,
+                                "evidence_ids": list(retry_result.evidence_ids),
+                                "entity_ids": list(retry_result.entity_ids),
+                                "relation_ids": list(retry_result.relation_ids),
+                                "retry_reason": retry_reason,
+                            }
+                        )
+                        task_evidence_ids.extend(retry_result.evidence_ids)
+                        task_entity_ids.extend(retry_result.entity_ids)
+                        task_relation_ids.extend(retry_result.relation_ids)
+                        _remember(agent_memory, retry_result)
+                        task_trace_count += 1
+                        sequence += 1
+                        retry_performed = True
+                    except Exception as exc:  # pragma: no cover - defensive trace path.
+                        errors.append(str(exc))
+                        trace_events.append(
+                            AgentTraceEvent(
+                                id=str(uuid4()),
+                                mission_id=running.id,
+                                task_id=task.id,
+                                sequence=sequence,
+                                event_type="error",
+                                tool_name=retry_tool_name,
+                                tool_input=dict(retry_tool_input),
+                                observation_summary="Critic retry failed.",
+                                started_at=event_started_at,
+                                completed_at=utc_now(),
+                                error=str(exc),
+                                metadata={
+                                    "selection": "critic_retry",
+                                    "retry_reason": retry_reason,
+                                },
+                            )
+                        )
+                        task_trace_count += 1
+                        sequence += 1
+            findings = _backfill_finding_evidence(findings, task_evidence_ids)
+            critic_result = self.verifier.verify_task(
+                replace(
+                    provisional_task,
+                    findings=findings,
+                    evidence_ids=_unique(task_evidence_ids),
+                    output_entity_ids=_unique(task_entity_ids),
+                ),
+                draft,
+            )
+            status = "complete" if findings else "failed"
+            if timed_out:
+                status = "partial" if findings else "timeout"
+            if errors and findings:
+                status = "partial"
+            provisional_task = replace(
+                provisional_task,
+                status=status,
+                steps_used=task_trace_count,
+                output_entity_ids=_unique(task_entity_ids),
+                evidence_ids=_unique(task_evidence_ids),
+                findings=findings,
+                confidence=0.8 if task_evidence_ids else 0.45,
+                metadata={
+                    **dict(provisional_task.metadata),
+                    "critic": {
+                        "status": critic_result.status,
+                        "supported_finding_count": critic_result.supported_finding_count,
+                        "uncertain_finding_count": critic_result.uncertain_finding_count,
+                        "warnings": list(critic_result.warnings),
+                        "retry_performed": retry_performed,
+                        "retry_reason": retry_reason,
+                    },
+                    "memory_after": _memory_summary(agent_memory),
+                },
+            )
+            critic_reviews.append(
+                {
+                    "task_id": task.id,
+                    "status": critic_result.status,
+                    "supported_finding_count": critic_result.supported_finding_count,
+                    "uncertain_finding_count": critic_result.uncertain_finding_count,
+                    "retry_performed": retry_performed,
+                }
+            )
+            completed_tasks.append(
+                provisional_task
             )
             if timed_out:
                 break
@@ -731,6 +947,30 @@ class AgentMissionRuntime:
             completed_at=utc_now(),
             tasks=completed_tasks,
             trace_events=trace_events,
+            metadata={
+                **dict(running.metadata),
+                "task_queue": [
+                    {
+                        "id": task.id,
+                        "task_type": task.task_type,
+                        "objective": task.objective,
+                        "allowed_tools": list(task.allowed_tools),
+                        "status": task.status,
+                    }
+                    for task in completed_tasks
+                ],
+                "agent_memory": _memory_summary(agent_memory),
+                "budget_usage": {
+                    "tool_calls_used": tool_calls_used,
+                    "max_tool_calls": running.budget.max_tool_calls,
+                    "completed_tasks": sum(
+                        1 for task in completed_tasks if task.status == "complete"
+                    ),
+                    "max_tasks": running.budget.max_tasks,
+                    "trace_events": len(trace_events),
+                },
+                "critic_reviews": critic_reviews,
+            },
         )
         verified = self._verify_mission(completed, draft)
         final = replace(verified, final_report=self._final_report(verified))
@@ -796,6 +1036,10 @@ class AgentMissionRuntime:
                     "graph_search",
                     {"project_id": project_id, "query": goal_query, "limit": 5},
                 ),
+                (
+                    "hybrid_search",
+                    {"project_id": project_id, "query": goal_query, "top_k": 6},
+                ),
             ],
             "map_archive_halls": [
                 ("list_halls", {"project_id": project_id}),
@@ -815,10 +1059,15 @@ class AgentMissionRuntime:
                     "graph_neighborhood",
                     {
                         "project_id": project_id,
+                        **({"focus_entity_id": focus_entity_id} if focus_entity_id else {}),
                         "depth": 1,
                         "node_limit": 20,
                         "relation_limit": 40,
                     },
+                ),
+                (
+                    "hybrid_search",
+                    {"project_id": project_id, "query": goal_query, "top_k": 8},
                 ),
                 (
                     "get_evidence",
@@ -827,6 +1076,10 @@ class AgentMissionRuntime:
             ],
             "summarize_architecture": [
                 ("graph_summary", {"project_id": project_id}),
+                (
+                    "hybrid_search",
+                    {"project_id": project_id, "query": goal_query, "top_k": 8},
+                ),
                 (
                     "get_evidence",
                     {"project_id": project_id, "evidence_ids": evidence_ids[:10]},
@@ -851,6 +1104,12 @@ class AgentMissionRuntime:
         deterministic_metadata: dict[str, Any] = {"selection": "deterministic"}
         if self.llm is None:
             return default_tool_name, fallback_input, deterministic_metadata
+        if _task_trace_count(trace_events, task.id) > 0:
+            return (
+                default_tool_name,
+                fallback_input,
+                {"selection": "deterministic_after_first_llm_selection"},
+            )
 
         try:
             response = self.llm.chat(
@@ -859,7 +1118,10 @@ class AgentMissionRuntime:
                     task=task,
                     allowed_tools=task.allowed_tools,
                     trace_events=trace_events,
-                )
+                ),
+                temperature=0.0,
+                max_tokens=ACTION_SELECTION_MAX_TOKENS,
+                response_format=JSON_OBJECT_RESPONSE_FORMAT,
             )
         except Exception as exc:
             return (
@@ -936,6 +1198,50 @@ class AgentMissionRuntime:
                 ),
             )
         return tool_name, selected_input, metadata
+
+    def _critic_retry_call(
+        self,
+        task: AgentMissionTask,
+        mission: AgentMission,
+        agent_memory: dict[str, list[str]],
+    ) -> tuple[str, dict[str, Any]] | None:
+        project_id = mission.project_id
+        if "hybrid_search" in task.allowed_tools:
+            return (
+                "hybrid_search",
+                {"project_id": project_id, "query": mission.goal, "top_k": 8},
+            )
+        if "get_evidence" in task.allowed_tools and agent_memory["evidence_ids"]:
+            return (
+                "get_evidence",
+                {
+                    "project_id": project_id,
+                    "evidence_ids": agent_memory["evidence_ids"][:10],
+                },
+            )
+        if "graph_neighborhood" in task.allowed_tools:
+            tool_input: dict[str, Any] = {
+                "project_id": project_id,
+                "depth": 1,
+                "node_limit": 30,
+                "relation_limit": 60,
+            }
+            focus_entity_id = (
+                agent_memory["entity_ids"][0]
+                if agent_memory["entity_ids"]
+                else task.input_entity_ids[0]
+                if task.input_entity_ids
+                else None
+            )
+            if focus_entity_id:
+                tool_input["focus_entity_id"] = focus_entity_id
+            return ("graph_neighborhood", tool_input)
+        if "graph_search" in task.allowed_tools:
+            return (
+                "graph_search",
+                {"project_id": project_id, "query": mission.goal, "limit": 5},
+            )
+        return None
 
     def _verify_mission(
         self,
@@ -1031,6 +1337,59 @@ def _unique(values: Any) -> list[str]:
     return unique
 
 
+def _remember(agent_memory: dict[str, list[str]], result: Any) -> None:
+    agent_memory["entity_ids"] = _unique(
+        [*agent_memory["entity_ids"], *list(result.entity_ids)]
+    )[:80]
+    agent_memory["evidence_ids"] = _unique(
+        [*agent_memory["evidence_ids"], *list(result.evidence_ids)]
+    )[:80]
+    agent_memory["relation_ids"] = _unique(
+        [*agent_memory["relation_ids"], *list(result.relation_ids)]
+    )[:80]
+    agent_memory["tool_names"] = _unique(
+        [*agent_memory["tool_names"], str(result.tool_name)]
+    )[:40]
+
+
+def _memory_summary(agent_memory: dict[str, list[str]]) -> dict[str, Any]:
+    return {
+        "entity_ids": list(agent_memory.get("entity_ids", []))[:20],
+        "evidence_ids": list(agent_memory.get("evidence_ids", []))[:20],
+        "relation_ids": list(agent_memory.get("relation_ids", []))[:20],
+        "tool_names": list(agent_memory.get("tool_names", []))[:20],
+        "counts": {
+            "entities": len(agent_memory.get("entity_ids", [])),
+            "evidence": len(agent_memory.get("evidence_ids", [])),
+            "relations": len(agent_memory.get("relation_ids", [])),
+            "tools": len(agent_memory.get("tool_names", [])),
+        },
+    }
+
+
+def _backfill_finding_evidence(
+    findings: list[dict[str, Any]],
+    task_evidence_ids: list[str],
+) -> list[dict[str, Any]]:
+    evidence_pool = _unique(task_evidence_ids)
+    if not evidence_pool:
+        return findings
+
+    backfilled: list[dict[str, Any]] = []
+    for finding in findings:
+        evidence_ids = _string_values(finding.get("evidence_ids", []))
+        if evidence_ids:
+            backfilled.append(finding)
+            continue
+
+        updated = dict(finding)
+        updated["evidence_ids"] = evidence_pool[:3]
+        updated["citation_backfilled"] = True
+        updated["citation_backfill_source"] = "task_evidence_pool"
+        backfilled.append(updated)
+    return backfilled
+
+
 def _mission_status(tasks: list[AgentMissionTask]) -> str:
     if not tasks:
         return "failed"
@@ -1041,6 +1400,26 @@ def _mission_status(tasks: list[AgentMissionTask]) -> str:
     if completed_count or partial_count:
         return "partial"
     return "failed"
+
+
+def _task_trace_count(trace_events: list[AgentTraceEvent], task_id: str) -> int:
+    return sum(1 for event in trace_events if event.task_id == task_id)
+
+
+def _task_seed_entity_ids(
+    seed_entity_ids: list[str],
+    *,
+    task_type: str,
+    order: int,
+) -> list[str]:
+    if not seed_entity_ids:
+        return []
+    if task_type in {"find_entry_points", "map_archive_halls"}:
+        return seed_entity_ids[:4]
+    window_size = 4
+    offset = max(0, (order - 2) * 2)
+    window = seed_entity_ids[offset: offset + window_size]
+    return window or seed_entity_ids[:window_size]
 
 
 def _seed_entity_ids(draft: ProjectArchiveDraft) -> list[str]:

@@ -302,6 +302,36 @@ def test_runtime_runs_tools_and_persists_trace(tmp_path):
     assert runtime.trace(mission.id) == restored.trace_events
 
 
+def test_runtime_records_agent_loop_memory_budget_and_critic_metadata(tmp_path):
+    service = RuntimeFakeService(tmp_path)
+    runtime = AgentMissionRuntime(
+        service=service,
+        store=MissionStore(tmp_path),
+        tool_registry=AgentToolRegistry(service),
+        llm=None,
+    )
+
+    mission = runtime.start(
+        project_id="demo",
+        goal="Understand architecture",
+        max_tasks=2,
+        max_steps_per_task=2,
+    )
+
+    assert mission.metadata["agent_loop"]["pattern"] == "planner_react_critic_retry"
+    assert mission.metadata["task_queue"]
+    assert mission.metadata["budget_usage"]["tool_calls_used"] >= 1
+    assert mission.metadata["agent_memory"]["counts"]["tools"] >= 1
+    assert mission.metadata["critic_reviews"]
+    assert mission.tasks[0].metadata["critic"]["status"] in {
+        "accepted",
+        "partial",
+        "uncertain",
+    }
+    assert "budget" in mission.trace_events[0].metadata
+    assert "memory" in mission.trace_events[0].metadata
+
+
 def test_mission_store_rejects_glob_like_ids_without_matching_saved_mission(tmp_path):
     draft = RuntimeFakeService(tmp_path).draft
     store = MissionStore(tmp_path)

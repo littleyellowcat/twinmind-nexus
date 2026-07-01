@@ -37,7 +37,10 @@ def test_project_ingest_builds_hybrid_rag_index_and_image_evidence(tmp_path):
     assert status["image_chunks"] == 1
     assert status["dense_provider"] in {"local_hash", "ollama"}
     assert status["dense_dimension"] > 0
-    assert any(card.source_type == "image" for card in draft.evidence_cards)
+    image_cards = [card for card in draft.evidence_cards if card.source_type == "image"]
+    assert image_cards
+    asset_id = image_cards[0].metadata["asset_id"]
+    assert (tmp_path / "archives" / "demo-hybrid" / "assets" / "images" / asset_id).exists()
 
 
 def test_project_ingest_falls_back_to_local_hash_when_embedding_unavailable(

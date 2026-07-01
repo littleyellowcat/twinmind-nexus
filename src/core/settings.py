@@ -93,6 +93,7 @@ class LLMSettings:
     model: str
     temperature: float
     max_tokens: int
+    timeout_seconds: float = 60.0
     # Azure/OpenAI-specific optional fields
     api_key: Optional[str] = None
     api_version: Optional[str] = None
@@ -168,6 +169,20 @@ class VisionLLMSettings:
 
 
 @dataclass(frozen=True)
+class ProjectArchiveGraphStoreSettings:
+    provider: str
+    uri: Optional[str] = None
+    username: Optional[str] = None
+    password: Optional[str] = None
+    database: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class ProjectArchiveSettings:
+    graph_store: ProjectArchiveGraphStoreSettings
+
+
+@dataclass(frozen=True)
 class IngestionSettings:
     chunk_size: int
     chunk_overlap: int
@@ -188,6 +203,7 @@ class Settings:
     observability: ObservabilitySettings
     ingestion: Optional[IngestionSettings] = None
     vision_llm: Optional[VisionLLMSettings] = None
+    project_archive: Optional[ProjectArchiveSettings] = None
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Settings":
@@ -229,12 +245,35 @@ class Settings:
                 base_url=vision_llm.get("base_url"),
             )
 
+        project_archive_settings = None
+        if "project_archive" in data:
+            project_archive = _require_mapping(data, "project_archive", "settings")
+            graph_store = _require_mapping(
+                project_archive,
+                "graph_store",
+                "project_archive",
+            )
+            project_archive_settings = ProjectArchiveSettings(
+                graph_store=ProjectArchiveGraphStoreSettings(
+                    provider=_require_str(
+                        graph_store,
+                        "provider",
+                        "project_archive.graph_store",
+                    ),
+                    uri=graph_store.get("uri"),
+                    username=graph_store.get("username"),
+                    password=graph_store.get("password"),
+                    database=graph_store.get("database"),
+                )
+            )
+
         settings = cls(
             llm=LLMSettings(
                 provider=_require_str(llm, "provider", "llm"),
                 model=_require_str(llm, "model", "llm"),
                 temperature=_require_number(llm, "temperature", "llm"),
                 max_tokens=_require_int(llm, "max_tokens", "llm"),
+                timeout_seconds=float(llm.get("timeout_seconds", 60.0)),
                 api_key=llm.get("api_key"),
                 api_version=llm.get("api_version"),
                 azure_endpoint=llm.get("azure_endpoint"),
@@ -281,6 +320,7 @@ class Settings:
             ),
             ingestion=ingestion_settings,
             vision_llm=vision_llm_settings,
+            project_archive=project_archive_settings,
         )
 
         return settings

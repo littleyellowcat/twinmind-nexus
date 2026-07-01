@@ -94,6 +94,11 @@ dmypy.json
 data/
 cache/
 logs/
+output/
+.run/
+.streamlit/
+.superpowers/
+frontend/dist/
 *.log
 traces.jsonl
 

@@ -7,6 +7,7 @@ import sqlite3
 from abc import ABC, abstractmethod
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
+from typing import Any
 from pathlib import Path
 
 from src.project_archive.types import (
@@ -14,6 +15,7 @@ from src.project_archive.types import (
     GraphPath,
     ProjectEntity,
     ProjectRelation,
+    ProjectUniverseEntityRef,
 )
 
 
@@ -56,6 +58,15 @@ class BaseGraphStore(ABC):
     @abstractmethod
     def find_paths(self, source_name: str, target_name: str) -> list[GraphPath]:
         """Find graph paths between entities by display name."""
+
+    def list_universe_entity_refs(
+        self,
+        project_ids: list[str],
+        *,
+        limit_per_project: int = 180,
+    ) -> list[ProjectUniverseEntityRef]:
+        """Return cross-project entity refs for global universe queries."""
+        return []
 
 
 class SQLiteGraphStore(BaseGraphStore):
@@ -529,28 +540,399 @@ class KuzuGraphStore(BaseGraphStore):
         )
 
 
+class Neo4jGraphStore(BaseGraphStore):
+    """Neo4j-backed graph store for production project archives."""
+
+    def __init__(
+        self,
+        *,
+        uri: str,
+        username: str,
+        password: str,
+        database: str = "neo4j",
+        project_id: str,
+    ) -> None:
+        try:
+            from neo4j import GraphDatabase
+        except ImportError as exc:
+            raise RuntimeError(
+                "Neo4j graph store requires the optional 'neo4j' package to be installed."
+            ) from exc
+
+        if not project_id:
+            raise ValueError("Neo4j graph store requires a project_id for isolation.")
+        if not uri:
+            raise ValueError("Neo4j graph store requires a uri.")
+        if not username:
+            raise ValueError("Neo4j graph store requires a username.")
+
+        self.project_id = project_id
+        self.database = database or "neo4j"
+        self.driver = GraphDatabase.driver(uri, auth=(username, password))
+        self._initialize()
+
+    def upsert_entities(self, entities: Iterable[ProjectEntity]) -> None:
+        rows = [
+            {
+                "id": entity.id,
+                "project_id": self.project_id,
+                "type": entity.type,
+                "name": entity.name,
+                "source_path": entity.source_path,
+                "properties_json": _json_dumps(entity.properties),
+                "evidence_ids_json": _json_dumps(entity.evidence_ids),
+            }
+            for entity in entities
+        ]
+        if not rows:
+            return
+
+        self._execute_write(
+            """
+            UNWIND $rows AS row
+            MERGE (entity:ProjectEntity {project_id: row.project_id, id: row.id})
+            SET
+                entity.type = row.type,
+                entity.name = row.name,
+                entity.source_path = row.source_path,
+                entity.properties_json = row.properties_json,
+                entity.evidence_ids_json = row.evidence_ids_json
+            """,
+            rows=rows,
+        )
+
+    def upsert_relations(self, relations: Iterable[ProjectRelation]) -> None:
+        rows = [
+            {
+                "id": relation.id,
+                "project_id": self.project_id,
+                "source_id": relation.source_id,
+                "target_id": relation.target_id,
+                "type": relation.type,
+                "evidence_ids_json": _json_dumps(relation.evidence_ids),
+                "properties_json": _json_dumps(relation.properties),
+            }
+            for relation in relations
+        ]
+        if not rows:
+            return
+
+        self._execute_write(
+            """
+            UNWIND $rows AS row
+            MERGE (source:ProjectEntity {project_id: row.project_id, id: row.source_id})
+            ON CREATE SET
+                source.type = 'Unknown',
+                source.name = row.source_id,
+                source.source_path = null,
+                source.properties_json = '{}',
+                source.evidence_ids_json = '[]'
+            MERGE (target:ProjectEntity {project_id: row.project_id, id: row.target_id})
+            ON CREATE SET
+                target.type = 'Unknown',
+                target.name = row.target_id,
+                target.source_path = null,
+                target.properties_json = '{}',
+                target.evidence_ids_json = '[]'
+            MERGE (source)-[relation:ARCHIVE_RELATION {project_id: row.project_id, id: row.id}]->(target)
+            SET
+                relation.type = row.type,
+                relation.evidence_ids_json = row.evidence_ids_json,
+                relation.properties_json = row.properties_json
+            """,
+            rows=rows,
+        )
+
+    def upsert_evidence(self, evidence_cards: Iterable[EvidenceCard]) -> None:
+        rows = [
+            {
+                "id": evidence.id,
+                "project_id": self.project_id,
+                "payload_json": _json_dumps(evidence.to_dict()),
+            }
+            for evidence in evidence_cards
+        ]
+        if not rows:
+            return
+
+        self._execute_write(
+            """
+            UNWIND $rows AS row
+            MERGE (evidence:ProjectEvidence {project_id: row.project_id, id: row.id})
+            SET evidence.payload_json = row.payload_json
+            """,
+            rows=rows,
+        )
+
+    def get_entity(self, entity_id: str) -> ProjectEntity | None:
+        rows = self._execute_read(
+            """
+            MATCH (entity:ProjectEntity {project_id: $project_id, id: $entity_id})
+            RETURN
+                entity.id AS id,
+                entity.type AS type,
+                entity.name AS name,
+                entity.source_path AS source_path,
+                entity.properties_json AS properties_json,
+                entity.evidence_ids_json AS evidence_ids_json
+            """,
+            project_id=self.project_id,
+            entity_id=entity_id,
+        )
+        return _entity_from_mapping(rows[0]) if rows else None
+
+    def list_entities(self, type: str | None = None) -> list[ProjectEntity]:
+        filters = ["entity.project_id = $project_id"]
+        params: dict[str, Any] = {"project_id": self.project_id}
+        if type is not None:
+            filters.append("entity.type = $type")
+            params["type"] = type
+        rows = self._execute_read(
+            f"""
+            MATCH (entity:ProjectEntity)
+            WHERE {" AND ".join(filters)}
+            RETURN
+                entity.id AS id,
+                entity.type AS type,
+                entity.name AS name,
+                entity.source_path AS source_path,
+                entity.properties_json AS properties_json,
+                entity.evidence_ids_json AS evidence_ids_json
+            ORDER BY entity.id
+            """,
+            **params,
+        )
+        return [_entity_from_mapping(row) for row in rows]
+
+    def list_relations(
+        self,
+        source_id: str | None = None,
+        target_id: str | None = None,
+        type: str | None = None,
+    ) -> list[ProjectRelation]:
+        filters = ["relation.project_id = $project_id"]
+        params: dict[str, Any] = {"project_id": self.project_id}
+        if source_id is not None:
+            filters.append("source.id = $source_id")
+            params["source_id"] = source_id
+        if target_id is not None:
+            filters.append("target.id = $target_id")
+            params["target_id"] = target_id
+        if type is not None:
+            filters.append("relation.type = $type")
+            params["type"] = type
+
+        rows = self._execute_read(
+            f"""
+            MATCH (source:ProjectEntity)-[relation:ARCHIVE_RELATION]->(target:ProjectEntity)
+            WHERE {" AND ".join(filters)}
+            RETURN
+                relation.id AS id,
+                source.id AS source_id,
+                target.id AS target_id,
+                relation.type AS type,
+                relation.evidence_ids_json AS evidence_ids_json,
+                relation.properties_json AS properties_json
+            ORDER BY relation.id
+            """,
+            **params,
+        )
+        return [_relation_from_mapping(row) for row in rows]
+
+    def list_evidence(self) -> list[EvidenceCard]:
+        rows = self._execute_read(
+            """
+            MATCH (evidence:ProjectEvidence)
+            WHERE evidence.project_id = $project_id
+            RETURN evidence.payload_json AS payload_json
+            ORDER BY evidence.id
+            """,
+            project_id=self.project_id,
+        )
+        return [
+            EvidenceCard.from_dict(json.loads(str(row["payload_json"])))
+            for row in rows
+        ]
+
+    def find_paths(self, source_name: str, target_name: str) -> list[GraphPath]:
+        rows = self._execute_read(
+            """
+            MATCH (source:ProjectEntity)-[relation:ARCHIVE_RELATION]->(target:ProjectEntity)
+            WHERE relation.project_id = $project_id
+              AND source.project_id = $project_id
+              AND target.project_id = $project_id
+              AND toLower(source.name) = toLower($source_name)
+              AND toLower(target.name) = toLower($target_name)
+            RETURN
+                source.id AS source_id,
+                target.id AS target_id,
+                relation.type AS relation_type,
+                relation.evidence_ids_json AS evidence_ids_json
+            ORDER BY relation.id
+            """,
+            project_id=self.project_id,
+            source_name=source_name,
+            target_name=target_name,
+        )
+
+        return [
+            GraphPath(
+                nodes=[str(row["source_id"]), str(row["target_id"])],
+                relations=[str(row["relation_type"])],
+                evidence_ids=json.loads(str(row["evidence_ids_json"])),
+            )
+            for row in rows
+        ]
+
+    def close(self) -> None:
+        self.driver.close()
+
+    def list_universe_entity_refs(
+        self,
+        project_ids: list[str],
+        *,
+        limit_per_project: int = 180,
+    ) -> list[ProjectUniverseEntityRef]:
+        selected_project_ids = [project_id for project_id in project_ids if project_id]
+        if not selected_project_ids:
+            return []
+
+        rows = self._execute_read(
+            """
+            MATCH (entity:ProjectEntity)
+            WHERE entity.project_id IN $project_ids
+            OPTIONAL MATCH (entity)-[relation:ARCHIVE_RELATION]-()
+            WITH entity, count(relation) AS degree
+            ORDER BY entity.project_id, degree DESC, size(entity.evidence_ids_json) DESC, entity.name
+            WITH entity.project_id AS project_id, collect({
+                id: entity.id,
+                type: entity.type,
+                name: entity.name,
+                source_path: entity.source_path,
+                evidence_ids_json: entity.evidence_ids_json,
+                degree: degree
+            })[..$limit_per_project] AS refs
+            UNWIND refs AS ref
+            RETURN
+                project_id AS project_id,
+                ref.id AS entity_id,
+                ref.type AS type,
+                ref.name AS label,
+                ref.source_path AS source_path,
+                ref.evidence_ids_json AS evidence_ids_json,
+                ref.degree AS degree
+            """,
+            project_ids=selected_project_ids,
+            limit_per_project=max(1, min(limit_per_project, 500)),
+        )
+        refs: list[ProjectUniverseEntityRef] = []
+        for row in rows:
+            evidence_ids = _safe_json_list(row.get("evidence_ids_json"))
+            refs.append(
+                ProjectUniverseEntityRef(
+                    project_id=str(row["project_id"]),
+                    entity_id=str(row["entity_id"]),
+                    label=str(row["label"]),
+                    type=str(row["type"]),
+                    source_path=str(row["source_path"]) if row.get("source_path") else None,
+                    degree=int(row.get("degree", 0) or 0),
+                    evidence_count=len(evidence_ids),
+                    hall_ids=[],
+                )
+            )
+        return refs
+
+    def _initialize(self) -> None:
+        self._execute_write(
+            """
+            CREATE CONSTRAINT project_entity_identity IF NOT EXISTS
+            FOR (entity:ProjectEntity)
+            REQUIRE (entity.project_id, entity.id) IS UNIQUE
+            """
+        )
+        self._execute_write(
+            """
+            CREATE CONSTRAINT project_evidence_identity IF NOT EXISTS
+            FOR (evidence:ProjectEvidence)
+            REQUIRE (evidence.project_id, evidence.id) IS UNIQUE
+            """
+        )
+        self._execute_write(
+            """
+            CREATE INDEX archive_relation_identity IF NOT EXISTS
+            FOR ()-[relation:ARCHIVE_RELATION]-()
+            ON (relation.project_id, relation.id)
+            """
+        )
+
+    def _execute_write(self, query: str, **params: Any) -> None:
+        with self.driver.session(database=self.database) as session:
+            session.execute_write(lambda tx: tx.run(query, **params).consume())
+
+    def _execute_read(self, query: str, **params: Any) -> list[dict[str, Any]]:
+        with self.driver.session(database=self.database) as session:
+            result = session.execute_read(
+                lambda tx: [dict(record) for record in tx.run(query, **params)]
+            )
+        return list(result)
+
+
 class GraphStoreFactory:
     """Factory for graph store providers."""
 
     @staticmethod
-    def create(provider: str, path: str | Path) -> BaseGraphStore:
+    def create(
+        provider: str,
+        path: str | Path,
+        *,
+        project_id: str | None = None,
+        config: dict[str, Any] | None = None,
+    ) -> BaseGraphStore:
         normalized_provider = provider.lower()
         if normalized_provider == "sqlite":
             return SQLiteGraphStore(path)
         if normalized_provider == "kuzu":
             return KuzuGraphStore(path)
+        if normalized_provider == "neo4j":
+            config = config or {}
+            return Neo4jGraphStore(
+                uri=str(config.get("uri") or "bolt://localhost:7687"),
+                username=str(config.get("username") or "neo4j"),
+                password=str(config.get("password") or ""),
+                database=str(config.get("database") or "neo4j"),
+                project_id=project_id or "",
+            )
         raise ValueError(f"Unsupported graph store provider: {provider}")
 
 
 def create_graph_store(
-    path: str | Path, preferred_provider: str = "sqlite"
+    path: str | Path,
+    preferred_provider: str = "sqlite",
+    *,
+    project_id: str | None = None,
+    config: dict[str, Any] | None = None,
 ) -> BaseGraphStore:
     """Create a graph store for the requested provider."""
-    return GraphStoreFactory.create(provider=preferred_provider, path=path)
+    return GraphStoreFactory.create(
+        provider=preferred_provider,
+        path=path,
+        project_id=project_id,
+        config=config,
+    )
 
 
 def _json_dumps(value: object) -> str:
     return json.dumps(value, sort_keys=True)
+
+
+def _safe_json_list(value: object) -> list[str]:
+    try:
+        payload = json.loads(str(value or "[]"))
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(payload, list):
+        return []
+    return [str(item) for item in payload]
 
 
 def _entity_from_row(row: sqlite3.Row) -> ProjectEntity:
@@ -594,4 +976,26 @@ def _relation_from_kuzu_row(row: list[object]) -> ProjectRelation:
         type=str(row[3]),
         evidence_ids=json.loads(str(row[4])),
         properties=json.loads(str(row[5])),
+    )
+
+
+def _entity_from_mapping(row: dict[str, Any]) -> ProjectEntity:
+    return ProjectEntity(
+        id=str(row["id"]),
+        type=str(row["type"]),
+        name=str(row["name"]),
+        source_path=str(row["source_path"]) if row.get("source_path") is not None else None,
+        properties=json.loads(str(row["properties_json"])),
+        evidence_ids=json.loads(str(row["evidence_ids_json"])),
+    )
+
+
+def _relation_from_mapping(row: dict[str, Any]) -> ProjectRelation:
+    return ProjectRelation(
+        id=str(row["id"]),
+        source_id=str(row["source_id"]),
+        target_id=str(row["target_id"]),
+        type=str(row["type"]),
+        evidence_ids=json.loads(str(row["evidence_ids_json"])),
+        properties=json.loads(str(row["properties_json"])),
     )

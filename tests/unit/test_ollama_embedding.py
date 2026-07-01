@@ -35,7 +35,7 @@ def mock_settings_ollama() -> Any:
 def mock_ollama_response() -> dict[str, Any]:
     """Create a mock Ollama embeddings response."""
     return {
-        "embedding": [0.1, 0.2, 0.3, 0.4, 0.5]  # Truncated for testing
+        "embeddings": [[0.1, 0.2, 0.3, 0.4, 0.5]]  # Truncated for testing
     }
 
 
@@ -110,14 +110,22 @@ class TestOllamaEmbedding:
         
         # Assert
         assert len(result) == 1
-        assert result[0] == mock_ollama_response["embedding"]
+        assert result[0] == mock_ollama_response["embeddings"][0]
         
         # Verify API call
         mock_client_class.return_value.__enter__.return_value.post.assert_called_once()
         call_args = mock_client_class.return_value.__enter__.return_value.post.call_args
-        assert call_args[0][0] == f"{embedding.base_url}/api/embeddings"
+        assert call_args[0][0] == f"{embedding.base_url}/api/embed"
         assert call_args[1]["json"]["model"] == "nomic-embed-text"
-        assert call_args[1]["json"]["prompt"] == "hello world"
+        assert call_args[1]["json"]["input"] == ["hello world"]
+
+    def test_initialization_with_configured_base_url(self, mock_settings_ollama: Any) -> None:
+        """Test initialization with base URL from settings."""
+        mock_settings_ollama.embedding.base_url = "http://configured-ollama:11434"
+
+        embedding = OllamaEmbedding(mock_settings_ollama)
+
+        assert embedding.base_url == "http://configured-ollama:11434"
     
     @patch('httpx.Client')
     def test_embed_multiple_texts(
@@ -126,18 +134,12 @@ class TestOllamaEmbedding:
         mock_settings_ollama: Any,
     ) -> None:
         """Test embedding multiple texts (batch processing)."""
-        # Setup mock HTTP client with different embeddings for each text
-        def create_response(url, json) -> Mock:
-            response = Mock()
-            # Return different embeddings based on prompt
-            if "hello" in json["prompt"]:
-                response.json.return_value = {"embedding": [0.1, 0.2, 0.3]}
-            else:
-                response.json.return_value = {"embedding": [0.4, 0.5, 0.6]}
-            response.raise_for_status.return_value = None
-            return response
-        
-        mock_client_class.return_value.__enter__.return_value.post.side_effect = create_response
+        mock_response = Mock()
+        mock_response.json.return_value = {
+            "embeddings": [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]
+        }
+        mock_response.raise_for_status.return_value = None
+        mock_client_class.return_value.__enter__.return_value.post.return_value = mock_response
         
         # Execute
         embedding = OllamaEmbedding(mock_settings_ollama)
@@ -148,8 +150,10 @@ class TestOllamaEmbedding:
         assert result[0] == [0.1, 0.2, 0.3]
         assert result[1] == [0.4, 0.5, 0.6]
         
-        # Verify API called twice (once per text)
-        assert mock_client_class.return_value.__enter__.return_value.post.call_count == 2
+        # Verify API called once with the whole batch.
+        assert mock_client_class.return_value.__enter__.return_value.post.call_count == 1
+        call_args = mock_client_class.return_value.__enter__.return_value.post.call_args
+        assert call_args[1]["json"]["input"] == ["hello world", "test"]
     
     def test_embed_empty_list(self, mock_settings_ollama: Any) -> None:
         """Test that embedding empty list raises ValueError."""

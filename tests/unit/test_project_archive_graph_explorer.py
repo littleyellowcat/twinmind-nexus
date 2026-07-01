@@ -5,6 +5,7 @@ from __future__ import annotations
 from src.project_archive.graph_explorer import (
     build_graph_neighborhood,
     build_graph_summary,
+    search_graph_entities,
 )
 from src.project_archive.types import (
     ArchiveHall,
@@ -145,6 +146,15 @@ def test_graph_summary_recommends_starts_with_reasons() -> None:
         "entry_file",
         "high_degree",
     }
+
+
+def test_search_graph_entities_matches_name_and_source_path() -> None:
+    results = search_graph_entities(_draft(), "settings", limit=10)
+
+    assert results
+    assert results[0].entity_id == "config:llm"
+    assert "source_path" in results[0].matched_fields
+    assert results[0].hall_ids == ["hall_architecture", "hall_config"]
 
 
 def test_neighborhood_uses_hall_specific_relations_without_global_fallback() -> None:

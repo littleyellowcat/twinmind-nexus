@@ -7,9 +7,11 @@ import json
 import math
 import os
 import re
+import shutil
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from src.core.query_engine.dense_retriever import DenseRetriever
 from src.core.query_engine.fusion import RRFFusion
@@ -34,6 +36,7 @@ IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
 MAX_IMAGE_BYTES = 6 * 1024 * 1024
 MAX_IMAGES_PER_PROJECT = 16
 DEFAULT_COLLECTION_PREFIX = "twinmind_project_chunks"
+DEFAULT_MAX_TEXT_CHUNKS = 2500
 
 
 @dataclass(frozen=True)
@@ -48,6 +51,8 @@ class HybridRAGBuildResult:
     vision_provider: str
     vision_enabled: bool
     fallback_reasons: list[str]
+    candidate_chunks: int = 0
+    indexing_policy: str = "all"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -55,12 +60,21 @@ class HybridRAGBuildResult:
             "indexed_chunks": self.indexed_chunks,
             "text_chunks": self.text_chunks,
             "image_chunks": self.image_chunks,
+            "candidate_chunks": self.candidate_chunks,
+            "coverage_ratio": round(
+                self.indexed_chunks / self.candidate_chunks
+                if self.candidate_chunks
+                else 0.0,
+                4,
+            ),
+            "indexing_policy": self.indexing_policy,
             "image_evidence_cards": [card.to_dict() for card in self.image_evidence_cards],
             "dense_provider": self.dense_provider,
             "dense_dimension": self.dense_dimension,
             "vision_provider": self.vision_provider,
             "vision_enabled": self.vision_enabled,
             "fallback_reasons": list(self.fallback_reasons),
+            "created_at": datetime.now(UTC).isoformat(),
         }
 
 
@@ -104,16 +118,37 @@ class ProjectHybridRAGIndex:
     def build(
         self,
         *,
-        project_root: Path | str,
+        project_root: Path | str | None,
         draft: ProjectArchiveDraft,
+        on_progress: Callable[[int, str], None] | None = None,
     ) -> HybridRAGBuildResult:
-        project_root = Path(project_root)
+        def report(progress: int, message: str) -> None:
+            if on_progress is not None:
+                on_progress(progress, message)
+
+        project_root = Path(project_root) if project_root is not None else None
         project_dir = self._project_dir(draft.project_id)
         project_dir.mkdir(parents=True, exist_ok=True)
         fallback_reasons: list[str] = []
 
-        image_cards = self._build_image_evidence(project_root, draft.project_id)
-        chunks = self._build_chunks(draft=draft, image_cards=image_cards)
+        report(69, "Scanning image evidence and preparing RAG chunks.")
+        image_cards = (
+            self._build_image_evidence(project_root, draft.project_id)
+            if project_root is not None and project_root.exists()
+            else []
+        )
+        candidate_chunks = self._build_chunks(draft=draft, image_cards=image_cards)
+        chunks, indexing_policy = _prioritize_chunks(
+            candidate_chunks,
+            max_chunks=_max_text_chunks(),
+        )
+        report(
+            70,
+            (
+                f"Prepared {len(chunks):,} prioritized chunks from "
+                f"{len(candidate_chunks):,} candidates ({indexing_policy})."
+            ),
+        )
         if not chunks:
             result = HybridRAGBuildResult(
                 project_id=draft.project_id,
@@ -126,6 +161,8 @@ class ProjectHybridRAGIndex:
                 vision_provider="none",
                 vision_enabled=False,
                 fallback_reasons=["No chunks were available for Hybrid RAG indexing."],
+                candidate_chunks=len(candidate_chunks),
+                indexing_policy=indexing_policy,
             )
             self._status_path(draft.project_id).write_text(
                 json.dumps(result.to_dict(), ensure_ascii=False, indent=2),
@@ -133,41 +170,63 @@ class ProjectHybridRAGIndex:
             )
             return result
 
+        report(71, "Creating embedding provider.")
         embedding, dense_provider, dense_dimension, reason = self._create_embedding()
         if reason:
             fallback_reasons.append(reason)
 
         try:
-            vectors = embedding.embed([chunk.text for chunk in chunks])
+            vectors = _embed_chunks_with_progress(
+                embedding=embedding,
+                chunks=chunks,
+                on_progress=report,
+                progress_start=72,
+                progress_end=82,
+            )
         except Exception as exc:
             fallback_reasons.append(f"Configured embedding failed; using local hash embedding: {exc}")
             embedding = LocalHashEmbedding()
             dense_provider = embedding.provider
             dense_dimension = embedding.dimension
-            vectors = embedding.embed([chunk.text for chunk in chunks])
+            report(72, "Configured embedding failed; using local hash embedding.")
+            vectors = _embed_chunks_with_progress(
+                embedding=embedding,
+                chunks=chunks,
+                on_progress=report,
+                progress_start=72,
+                progress_end=82,
+            )
 
+        report(83, "Opening Chroma collection and removing stale project vectors.")
         vector_store = self._create_vector_store(
             dense_provider=dense_provider,
             dense_dimension=dense_dimension,
         )
         vector_store.delete_by_metadata({"project_id": draft.project_id})
-        vector_store.upsert(
-            [
-                {
-                    "id": chunk.id,
-                    "vector": vector,
-                    "metadata": {**chunk.metadata, "text": chunk.text},
-                }
-                for chunk, vector in zip(chunks, vectors, strict=True)
-            ]
-        )
+        records = [
+            {
+                "id": chunk.id,
+                "vector": vector,
+                "metadata": {**chunk.metadata, "text": chunk.text},
+            }
+            for chunk, vector in zip(chunks, vectors, strict=True)
+        ]
+        for batch_index, batch in enumerate(_batched(records, _upsert_batch_size()), start=1):
+            vector_store.upsert(batch)
+            report(
+                _interpolate_progress(84, 90, batch_index, _batch_count(len(records), _upsert_batch_size())),
+                f"Writing vectors to Chroma: {min(batch_index * _upsert_batch_size(), len(records)):,}/{len(records):,}.",
+            )
 
+        report(91, "Building sparse BM25 index.")
         sparse_stats = SparseEncoder().encode(chunks)
+        report(93, "Persisting BM25 collection for project search.")
         BM25Indexer(index_dir=str(self._bm25_dir())).rebuild(
             sparse_stats,
             collection=self._project_collection(draft.project_id),
         )
 
+        report(95, "Writing Hybrid RAG status.")
         vision_status = self._vision_status(image_cards)
         result = HybridRAGBuildResult(
             project_id=draft.project_id,
@@ -185,6 +244,8 @@ class ProjectHybridRAGIndex:
                 for card in image_cards
                 if card.metadata.get("vision_error")
             ],
+            candidate_chunks=len(candidate_chunks),
+            indexing_policy=indexing_policy,
         )
         self._status_path(draft.project_id).write_text(
             json.dumps(
@@ -198,7 +259,16 @@ class ProjectHybridRAGIndex:
             ),
             encoding="utf-8",
         )
+        report(96, f"Hybrid RAG indexed {len(chunks):,} chunks.")
         return result
+
+    def rebuild_from_draft(
+        self,
+        draft: ProjectArchiveDraft,
+        on_progress: Callable[[int, str], None] | None = None,
+    ) -> HybridRAGBuildResult:
+        """Rebuild text Hybrid RAG from a persisted archive draft."""
+        return self.build(project_root=None, draft=draft, on_progress=on_progress)
 
     def search(
         self,
@@ -409,13 +479,21 @@ class ProjectHybridRAGIndex:
 
         vision_llm, provider, disabled_reason = self._create_vision_llm()
         cards: list[EvidenceCard] = []
+        asset_dir = self._project_dir(project_id) / "assets" / "images"
+        asset_dir.mkdir(parents=True, exist_ok=True)
         for index, image_path in enumerate(images):
             relative_path = image_path.relative_to(project_root).as_posix()
+            asset_id = _image_asset_id(relative_path, image_path.suffix)
+            asset_path = asset_dir / asset_id
+            shutil.copy2(image_path, asset_path)
             metadata: dict[str, Any] = {
                 "modality": "image",
                 "vision_provider": provider,
                 "vision_enabled": vision_llm is not None,
                 "file_size": image_path.stat().st_size,
+                "asset_id": asset_id,
+                "asset_path": f"assets/images/{asset_id}",
+                "mime_type": _image_mime_type(image_path),
             }
             if disabled_reason:
                 metadata["vision_error"] = disabled_reason
@@ -620,12 +698,131 @@ def _hall_ids_by_entity(draft: ProjectArchiveDraft) -> dict[str, list[str]]:
     return rows
 
 
+def _max_text_chunks() -> int:
+    value = os.getenv("TWINMIND_HYBRID_RAG_MAX_CHUNKS")
+    if value is None:
+        return DEFAULT_MAX_TEXT_CHUNKS
+    try:
+        return max(200, int(value))
+    except ValueError:
+        return DEFAULT_MAX_TEXT_CHUNKS
+
+
+def _embedding_batch_size() -> int:
+    return _env_int("TWINMIND_HYBRID_RAG_EMBED_BATCH_SIZE", 64, minimum=1)
+
+
+def _upsert_batch_size() -> int:
+    return _env_int("TWINMIND_HYBRID_RAG_UPSERT_BATCH_SIZE", 256, minimum=1)
+
+
+def _env_int(name: str, fallback: int, *, minimum: int) -> int:
+    value = os.getenv(name)
+    if value is None:
+        return fallback
+    try:
+        return max(minimum, int(value))
+    except ValueError:
+        return fallback
+
+
+def _batched(items: list[Any], batch_size: int) -> list[list[Any]]:
+    return [items[index:index + batch_size] for index in range(0, len(items), batch_size)]
+
+
+def _batch_count(item_count: int, batch_size: int) -> int:
+    if item_count <= 0:
+        return 1
+    return max(1, math.ceil(item_count / batch_size))
+
+
+def _interpolate_progress(start: int, end: int, step: int, total_steps: int) -> int:
+    if total_steps <= 1:
+        return end
+    return min(end, start + round((end - start) * step / total_steps))
+
+
+def _embed_chunks_with_progress(
+    *,
+    embedding: BaseEmbedding,
+    chunks: list[Chunk],
+    on_progress: Callable[[int, str], None],
+    progress_start: int,
+    progress_end: int,
+) -> list[list[float]]:
+    batch_size = _embedding_batch_size()
+    batches = _batched(chunks, batch_size)
+    vectors: list[list[float]] = []
+    total = len(chunks)
+    for batch_index, batch in enumerate(batches, start=1):
+        vectors.extend(embedding.embed([chunk.text for chunk in batch]))
+        completed = min(batch_index * batch_size, total)
+        on_progress(
+            _interpolate_progress(progress_start, progress_end, batch_index, len(batches)),
+            f"Embedding chunks: {completed:,}/{total:,}.",
+        )
+    return vectors
+
+
+def _prioritize_chunks(chunks: list[Chunk], *, max_chunks: int) -> tuple[list[Chunk], str]:
+    if len(chunks) <= max_chunks:
+        return chunks, "all"
+
+    def score(chunk: Chunk) -> tuple[int, int, int]:
+        metadata = chunk.metadata
+        kind = str(metadata.get("chunk_kind", ""))
+        source_path = str(metadata.get("source_path", "")).lower()
+        source_type = str(metadata.get("source_type", "")).lower()
+        text = chunk.text.lower()
+        value = 0
+        if kind == "evidence":
+            value += 90
+        elif kind == "entity":
+            value += 68
+        elif kind == "relation":
+            value += 56
+        if any(
+            marker in source_path
+            for marker in (
+                "readme",
+                "pom.xml",
+                "build.gradle",
+                "package.json",
+                "application.yml",
+                "application.yaml",
+                "application.properties",
+                "dockerfile",
+                "compose",
+            )
+        ):
+            value += 30
+        if any(marker in source_path for marker in ("controller", "service", "config", "security", "mapper", "repository")):
+            value += 24
+        if any(marker in source_path for marker in ("test/", "tests/", "target/", "dist/", "build/")):
+            value -= 18
+        if source_type in {"class", "function", "interface", "struct", "enum", "config", "file"}:
+            value += 12
+        if any(marker in text for marker in ("application", "controller", "service", "config", "security", "database", "redis", "mysql", "api")):
+            value += 8
+        return (value, min(len(chunk.text), 4000), -int(metadata.get("chunk_index", 0) or 0))
+
+    selected = sorted(chunks, key=score, reverse=True)[:max_chunks]
+    return selected, f"prioritized_top_{max_chunks}_of_{len(chunks)}"
+
+
 def _chunk_id(project_id: str, kind: str, item_id: str) -> str:
     return f"{_stable_hash(project_id)[:10]}:{kind}:{_stable_hash(item_id)[:16]}"
 
 
 def _stable_hash(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _image_asset_id(relative_path: str, suffix: str) -> str:
+    normalized_suffix = suffix.lower()
+    if normalized_suffix not in IMAGE_SUFFIXES:
+        normalized_suffix = ".png"
+    return f"{_stable_hash(relative_path)[:16]}{normalized_suffix}"
 
 
 def _sanitize_collection_name(value: str) -> str:

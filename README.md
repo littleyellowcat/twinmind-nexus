@@ -10,19 +10,46 @@
 
 ## 快速体验
 
+推荐使用一键启动器，它会同时启动 FastAPI 后端和 React 前端：
+
 ```bash
-cd "/Users/kitten/MultimodalRAG/TwinMind Archive"
-source .venv/bin/activate
-streamlit run src/observability/dashboard/app.py
+python3 /Users/kitten/MultimodalRAG/start_twinmind_archive.py
 ```
 
 打开：
 
 ```text
-http://127.0.0.1:8501
+http://127.0.0.1:5174
 ```
 
-进入左侧 `TwinMind 档案馆` 页面，可以通过 `示例项目摄取流程` 一键填入示例项目路径，然后点击 `构建档案`。
+健康检查：
+
+```bash
+python3 /Users/kitten/MultimodalRAG/start_twinmind_archive.py health
+```
+
+前端默认是干净状态。你可以先上传项目 `.zip`，然后点击 `生成档案`；也可以在右上角 `项目档案` 下拉框里选择已有档案。`项目 ID` 不需要手动填，系统会根据 ZIP 文件名自动生成。TwinMind 会自动忽略 `.git`、`.venv`、`node_modules`、`data` 和缓存等重目录。
+
+默认扫描模式是 `架构优先`，会跳过 `tests`、`.claude`、`.github` 等容易干扰主视图的目录。需要全面审查时可以切换到 `完整审计`。
+
+旧版 Streamlit 面板仍保留在 `src/observability/dashboard/app.py`，但 TwinMind Archive 的主入口已经迁移到 React 工作台。
+
+## 当前验证路线
+
+如果要确认项目“真的能跑真实项目”，建议先运行 GitHub ZIP 回归：
+
+```bash
+cd "/Users/kitten/MultimodalRAG/TwinMind Archive"
+.venv/bin/python scripts/run_github_zip_regression.py --limit 3 --skip-existing
+```
+
+报告会写入：
+
+```text
+output/github_zip_regression_report.md
+```
+
+这个报告会检查每个测试项目的实体、关系、证据、稀疏展厅、图谱质量、摄取健康度、Hybrid RAG 索引块、多模态图片理解和建议项。它比单纯看前端数字更适合判断“为什么某个项目看起来内容很少”。
 
 更详细的使用说明见：
 
@@ -30,12 +57,25 @@ http://127.0.0.1:8501
 
 ## TwinMind Archive 新增能力
 
-- 全局中英文切换基础，主要 Dashboard 页面会跟随切换
-- 项目摄取：扫描代码、文档和配置，生成项目档案
-- 项目知识图谱：实体、关系、证据卡、档案展厅
-- Agent 查询：架构导览、影响分析、风险审计、证据问答
+- React 档案工作台：档案总览、图谱探索、Agent 分析、知识宇宙、任务中心、系统配置
+- 全局中英文切换，主要工作台区域会跟随切换
+- 项目摄取：上传 ZIP 后扫描代码、文档、配置和图片，生成项目档案
+- 多语言结构抽取：Tree-sitter 优先支持 Java、C++、TypeScript/JavaScript、Go、Rust，基础扫描覆盖 Python、Markdown、JSON、YAML、TOML 等
+- 项目知识图谱：实体、关系、证据卡、档案展厅、邻域探索、路径保存、图谱治理
+- Hybrid RAG：Chroma 向量检索 + BM25 + RRF 融合，并把检索结果转成证据卡
+- 多模态：图片证据卡、Ollama vision 接口、图片理解状态和多模态洞察
+- Agent 查询：架构导览、影响分析、风险审计、证据问答、ReAct 任务轨迹
+- 项目报告：Agent 报告、项目智能报告、Markdown/PDF 导出、评测基准、压力测试
 - MCP 工具：`ingest_project_archive`、`query_project_twin`
-- 图存储：SQLite 默认，Kuzu 可选
+- 图存储：SQLite 默认，Kuzu/Neo4j 可选配置
+
+## 四条收口优化
+
+当前阶段的收口优化记录在：
+
+[docs/twinmind_archive_finalization_plan.md](docs/twinmind_archive_finalization_plan.md)
+
+这四项分别是：真实 ZIP 回归、稀疏档案诊断、前端工作流状态清晰化、真实运行闭环文档化。
 
 ---
 

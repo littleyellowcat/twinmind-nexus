@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from zipfile import ZipFile
+
+import pytest
 
 from src.project_archive.types import (
     AgentResult,
@@ -14,6 +17,15 @@ from src.project_archive.types import (
     ProjectRelation,
     QueryMode,
 )
+
+
+class _FakeUpload:
+    def __init__(self, name: str, payload: bytes) -> None:
+        self.name = name
+        self._payload = payload
+
+    def getvalue(self) -> bytes:
+        return self._payload
 
 
 def _sample_draft() -> ProjectArchiveDraft:
@@ -82,6 +94,136 @@ def test_relation_rows_use_entity_names() -> None:
     ]
 
 
+def test_upload_project_id_defaults_to_uploaded_name() -> None:
+    from src.observability.dashboard.pages import twinmind_archive as page
+
+    assert page._slugify_project_id(" My Cool 项目! ") == "My-Cool"
+    assert page._project_id_from_upload("", zip_name="modular-rag.zip") == "modular-rag"
+    assert (
+        page._project_id_from_upload(
+            "",
+            folder_files=[_FakeUpload("TwinMind Archive/src/app.py", b"")],
+        )
+        == "TwinMind-Archive"
+    )
+
+
+def test_safe_upload_path_blocks_traversal() -> None:
+    from src.observability.dashboard.pages import twinmind_archive as page
+
+    assert page._safe_upload_path("project/src/app.py").parts == (
+        "project",
+        "src",
+        "app.py",
+    )
+    with pytest.raises(ValueError):
+        page._safe_upload_path("../secrets.env")
+    with pytest.raises(ValueError):
+        page._safe_upload_path("/tmp/project.py")
+
+
+def test_extract_project_zip_selects_wrapped_project_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from src.observability.dashboard.pages import twinmind_archive as page
+
+    monkeypatch.setattr(page, "PROJECT_UPLOAD_DIR", tmp_path)
+    archive_bytes = _build_zip(
+        {
+            "DemoProject/README.md": b"# Demo",
+            "DemoProject/src/app.py": b"print('hi')",
+        }
+    )
+
+    project_root = page._extract_project_zip(
+        _FakeUpload("DemoProject.zip", archive_bytes),
+        "demo-project",
+    )
+
+    assert project_root == tmp_path / "demo-project" / "source" / "DemoProject"
+    assert (project_root / "README.md").read_text(encoding="utf-8") == "# Demo"
+
+
+def test_extract_project_zip_skips_heavy_ignored_directories(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from src.observability.dashboard.pages import twinmind_archive as page
+
+    monkeypatch.setattr(page, "PROJECT_UPLOAD_DIR", tmp_path)
+    archive_bytes = _build_zip(
+        {
+            "DemoProject/README.md": b"# Demo",
+            "DemoProject/.venv/lib/site-packages/pkg.py": b"ignored",
+            "DemoProject/node_modules/pkg/index.js": b"ignored",
+            "DemoProject/data/chroma.sqlite": b"ignored",
+            "DemoProject/tests/test_app.py": b"ignored",
+            "DemoProject/.claude/skills/SKILL.md": b"# ignored",
+        }
+    )
+
+    project_root = page._extract_project_zip(
+        _FakeUpload("DemoProject.zip", archive_bytes),
+        "demo-project",
+    )
+
+    assert (project_root / "README.md").exists()
+    assert not (project_root / ".venv").exists()
+    assert not (project_root / "node_modules").exists()
+    assert not (project_root / "data").exists()
+    assert not (project_root / "tests").exists()
+    assert not (project_root / ".claude").exists()
+
+
+def test_save_project_folder_upload_preserves_relative_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from src.observability.dashboard.pages import twinmind_archive as page
+
+    monkeypatch.setattr(page, "PROJECT_UPLOAD_DIR", tmp_path)
+    project_root = page._save_project_folder_upload(
+        [
+            _FakeUpload("DemoProject/README.md", b"# Demo"),
+            _FakeUpload("DemoProject/src/app.py", b"print('hi')"),
+        ],
+        "demo-project",
+    )
+
+    assert project_root == tmp_path / "demo-project" / "source" / "DemoProject"
+    assert (project_root / "src" / "app.py").read_text(encoding="utf-8") == "print('hi')"
+
+
+def test_save_project_folder_upload_rejects_too_many_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from src.observability.dashboard.pages import twinmind_archive as page
+
+    monkeypatch.setattr(page, "PROJECT_UPLOAD_DIR", tmp_path)
+    monkeypatch.setattr(page, "MAX_FOLDER_UPLOAD_FILES", 2)
+
+    with pytest.raises(ValueError, match="Please upload a ZIP"):
+        page._save_project_folder_upload(
+            [
+                _FakeUpload("DemoProject/a.py", b""),
+                _FakeUpload("DemoProject/b.py", b""),
+                _FakeUpload("DemoProject/c.py", b""),
+            ],
+            "demo-project",
+        )
+
+
+def test_entity_display_name_uses_human_readable_context() -> None:
+    from src.observability.dashboard.pages import twinmind_archive as page
+
+    assert (
+        page._entity_display_name("func:run", _sample_draft())
+        == "Function: run"
+    )
+    assert (
+        page._entity_display_name("file:app.py", _sample_draft())
+        == "File: app.py"
+    )
+
+
 def test_format_agent_result_includes_sections() -> None:
     from src.observability.dashboard.pages import twinmind_archive as page
 
@@ -103,6 +245,24 @@ def test_format_agent_result_includes_sections() -> None:
     assert "- file:app.py" in formatted
     assert "- ev:1" in formatted
     assert "- Check affected callers." in formatted
+
+
+def test_format_agent_result_can_expand_archive_ids() -> None:
+    from src.observability.dashboard.pages import twinmind_archive as page
+
+    result = AgentResult(
+        mode=QueryMode.IMPACT_ANALYSIS,
+        question="What changes?",
+        summary="Impact analysis traced deterministic archive relationships.",
+        affected_entities=["func:run"],
+        evidence_card_ids=["ev:1"],
+        confidence=0.8,
+    )
+
+    formatted = page._format_agent_result(result, draft=_sample_draft())
+
+    assert "- Function: run" in formatted
+    assert "- run (app.py)" in formatted
 
 
 def test_format_agent_result_supports_chinese_labels() -> None:
@@ -140,3 +300,13 @@ def test_draft_fixture_round_trip_matches_dashboard_expectation(tmp_path: Path) 
 
     assert loaded.project_id == "sample"
     assert loaded.entities[0].name == "app.py"
+
+
+def _build_zip(files: dict[str, bytes]) -> bytes:
+    import io
+
+    buffer = io.BytesIO()
+    with ZipFile(buffer, "w") as archive:
+        for filename, payload in files.items():
+            archive.writestr(filename, payload)
+    return buffer.getvalue()

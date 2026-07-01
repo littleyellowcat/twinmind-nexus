@@ -21,6 +21,9 @@ from src.project_archive.types import (
 )
 
 AGENT_ORDER = ["archivist", "cartographer", "detective", "skeptic", "curator"]
+JSON_OBJECT_RESPONSE_FORMAT = {"type": "json_object"}
+STRUCTURED_ROLE_MAX_TOKENS = 2200
+STRUCTURED_ROLE_RETRY_MAX_TOKENS = 4200
 
 
 @dataclass(frozen=True)
@@ -94,10 +97,14 @@ class MultiAgentPipeline:
         self.model = getattr(llm, "model", None)
 
     @classmethod
-    def from_config(cls) -> MultiAgentPipeline:
+    def from_config(cls, llm_mode: str = "deep") -> MultiAgentPipeline:
+        if llm_mode == "fast":
+            return cls()
         enhancer = create_archive_llm_enhancer_from_config()
         if enhancer is None:
             return cls()
+        if hasattr(enhancer.llm, "timeout"):
+            enhancer.llm.timeout = max(float(getattr(enhancer.llm, "timeout", 60.0)), 120.0)
         return cls(llm=enhancer.llm, provider=enhancer.provider)
 
     def run(
@@ -453,6 +460,7 @@ class MultiAgentPipeline:
             payload = _call_role_llm(self.llm, result, draft, agents)
             used_plain_text_fallback = bool(payload.pop("__llm_fallback", False))
             used_json_repair = bool(payload.pop("__json_repaired", False))
+            used_json_regeneration = bool(payload.pop("__json_regenerated", False))
             return AgentRoleResult(
                 agent=result.agent,
                 status="complete",
@@ -476,6 +484,7 @@ class MultiAgentPipeline:
                         "model": self.model,
                         **({"fallback": True} if used_plain_text_fallback else {}),
                         **({"json_repaired": True} if used_json_repair else {}),
+                        **({"json_regenerated": True} if used_json_regeneration else {}),
                     },
                 },
             )
@@ -504,7 +513,7 @@ def _call_role_llm(
     draft: ProjectArchiveDraft,
     agents: dict[str, AgentRoleResult],
 ) -> dict[str, Any]:
-    evidence = _top_evidence(draft.evidence_cards, limit=8)
+    evidence = _top_evidence(draft.evidence_cards, limit=4)
     prompt = {
         "role": result.agent,
         "project_id": draft.project_id,
@@ -522,32 +531,52 @@ def _call_role_llm(
                 "id": card.id,
                 "path": card.source_path,
                 "title": card.title,
-                "snippet": card.snippet[:700],
+                "snippet": card.snippet[:360],
             }
             for card in evidence
         ],
         "instructions": (
             "Improve the current role result using only provided evidence. "
             "Return JSON with summary, findings, risks, next_actions, "
-            "evidence_card_ids, confidence. Return one JSON object only, without "
-            "Markdown fences, prose, or comments. Answer Chinese user-facing text in Chinese."
+            "evidence_card_ids, confidence. Return one json object only, without "
+            "Markdown fences, prose, or comments. Do not wrap the JSON in a string. "
+            "Use this exact top-level schema: "
+            "{summary:string, findings:array, risks:array, next_actions:array, "
+            "evidence_card_ids:array, confidence:number}. "
+            'Example json output: {"summary":"...","findings":[],"risks":[],"next_actions":[],"evidence_card_ids":[],"confidence":0.8}. '
+            "Answer Chinese user-facing text in Chinese."
         ),
     }
-    response = llm.chat(
-        [
-            Message(
-                role="system",
-                content=(
-                    "You are one role in TwinMind Archive's project analysis pipeline. "
-                    "Return one JSON object only. Do not include Markdown fences, prose, or comments."
-                ),
+    messages = [
+        Message(
+            role="system",
+            content=(
+                "You are one role in TwinMind Archive's project analysis pipeline. "
+                "Return one json object only. Do not include Markdown fences, prose, or comments."
             ),
-            Message(role="user", content=json.dumps(prompt, ensure_ascii=False)),
-        ]
+        ),
+        Message(role="user", content=json.dumps(prompt, ensure_ascii=False)),
+    ]
+    response = llm.chat(
+        messages,
+        temperature=0.0,
+        max_tokens=STRUCTURED_ROLE_MAX_TOKENS,
+        response_format=JSON_OBJECT_RESPONSE_FORMAT,
     )
     try:
-        return _parse_json_object(response.content)
-    except ValueError:
+        return _normalize_role_llm_payload(_parse_json_object(response.content))
+    except ValueError as first_error:
+        try:
+            payload = _regenerate_role_json_response(
+                llm=llm,
+                original_prompt=prompt,
+                raw_content=response.content,
+                error=str(first_error),
+            )
+            payload["__json_regenerated"] = True
+            return _normalize_role_llm_payload(payload)
+        except ValueError:
+            pass
         try:
             payload = _repair_role_json_response(
                 llm=llm,
@@ -555,7 +584,7 @@ def _call_role_llm(
                 result=result,
             )
             payload["__json_repaired"] = True
-            return payload
+            return _normalize_role_llm_payload(payload)
         except ValueError:
             pass
         summary = _strip_fences(response.content).strip()
@@ -570,6 +599,75 @@ def _call_role_llm(
             "confidence": min(0.72, result.confidence),
             "__llm_fallback": True,
         }
+
+
+def _regenerate_role_json_response(
+    *,
+    llm: BaseLLM,
+    original_prompt: dict[str, Any],
+    raw_content: str,
+    error: str,
+) -> dict[str, Any]:
+    retry_payload = {
+        "task": "Regenerate the Agent role result as one valid json object.",
+        "error": error[:300],
+        "previous_invalid_response": raw_content[:1200],
+        "required_schema": {
+            "summary": "string",
+            "findings": [{"title": "string", "detail": "string", "evidence_ids": ["string"]}],
+            "risks": [{"title": "string", "detail": "string", "severity": "low|medium|high"}],
+            "next_actions": ["string"],
+            "evidence_card_ids": ["string"],
+            "confidence": "number between 0 and 1",
+        },
+        "original_prompt": original_prompt,
+        "rules": [
+            "Return one json object only.",
+            "Do not include Markdown fences, analysis, or prose outside the json object.",
+            "Use only evidence_card_ids present in original_prompt.evidence_cards.",
+            "If uncertain, keep deterministic current_result values and lower confidence.",
+        ],
+    }
+    retry_response = llm.chat(
+        [
+            Message(
+                role="system",
+                content=(
+                    "The previous structured Agent response was invalid. "
+                    "Regenerate it as strict json only. No prose. No Markdown fences."
+                ),
+            ),
+            Message(role="user", content=json.dumps(retry_payload, ensure_ascii=False)),
+        ],
+        temperature=0.0,
+        max_tokens=STRUCTURED_ROLE_RETRY_MAX_TOKENS,
+        response_format=JSON_OBJECT_RESPONSE_FORMAT,
+    )
+    return _parse_json_object(retry_response.content)
+
+
+def _normalize_role_llm_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Handle models that return a JSON object string inside the summary field."""
+    summary = payload.get("summary")
+    if not isinstance(summary, str):
+        return payload
+    try:
+        nested = _parse_json_object(summary)
+    except ValueError:
+        return payload
+    normalized = dict(payload)
+    for key in (
+        "summary",
+        "findings",
+        "risks",
+        "next_actions",
+        "evidence_card_ids",
+        "confidence",
+    ):
+        if key in nested and (key == "summary" or not normalized.get(key)):
+            normalized[key] = nested[key]
+    normalized["__json_repaired"] = bool(normalized.get("__json_repaired", False))
+    return normalized
 
 
 def _attach_agent_runtime_metadata(
@@ -822,11 +920,14 @@ def _repair_role_json_response(
                 role="system",
                 content=(
                     "You are a strict JSON repair adapter for an Agent pipeline. "
-                    "Return one valid JSON object only, with no prose and no Markdown fences."
+                    "Return one valid json object only, with no prose and no Markdown fences."
                 ),
             ),
             Message(role="user", content=json.dumps(repair_payload, ensure_ascii=False)),
-        ]
+        ],
+        temperature=0.0,
+        max_tokens=STRUCTURED_ROLE_MAX_TOKENS,
+        response_format=JSON_OBJECT_RESPONSE_FORMAT,
     )
     return _parse_json_object(repair_response.content)
 

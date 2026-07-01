@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from dataclasses import replace
+from typing import Protocol
 
 from src.project_archive.types import (
     AgentResult,
@@ -14,11 +16,67 @@ from src.project_archive.types import (
 )
 
 
-class AgentWorkflow:
-    """Rule-based archive workflows with no model calls or external state."""
+class AgentResultEnhancer(Protocol):
+    """Optional LLM layer that can refine deterministic agent results."""
 
-    _ARCHITECTURE_TYPES = {"File", "Module", "Class", "Function"}
-    _IMPACT_RELATION_TYPES = {"AFFECTS", "DEFINES", "CONFIGURES"}
+    provider: str
+
+    def enhance(
+        self,
+        result: AgentResult,
+        *,
+        evidence_cards: list[EvidenceCard],
+        entities: list[ProjectEntity],
+        relations: list[ProjectRelation],
+    ) -> AgentResult:
+        """Return an enhanced agent result."""
+
+
+class AgentWorkflow:
+    """Rule-based archive workflows with optional LLM report enhancement."""
+
+    _ARCHITECTURE_TYPES = {
+        "Class",
+        "Concept",
+        "Config",
+        "Dependency",
+        "DependencyManifest",
+        "EntryPoint",
+        "Enum",
+        "ExternalType",
+        "File",
+        "Function",
+        "Implementation",
+        "Import",
+        "Interface",
+        "Markdown",
+        "Method",
+        "Module",
+        "Namespace",
+        "Package",
+        "RAGComponent",
+        "Retriever",
+        "ServiceBoundary",
+        "Struct",
+        "Trait",
+        "Type",
+        "TypeAlias",
+    }
+    _IMPACT_RELATION_TYPES = {
+        "AFFECTS",
+        "BELONGS_TO_BOUNDARY",
+        "BELONGS_TO_MODULE",
+        "CALLS",
+        "CONFIGURES",
+        "CONFIGURES_DEPENDENCIES",
+        "DECLARES_ENTRYPOINT",
+        "DEFINES",
+        "DEPENDS_ON",
+        "EXTENDS",
+        "IMPLEMENTS",
+        "IMPORTS",
+        "PARTICIPATES_IN_RAG",
+    }
     _RISK_TERMS = ("placeholder", "will be implemented", "phase")
 
     def __init__(
@@ -26,19 +84,23 @@ class AgentWorkflow:
         entities: list[ProjectEntity],
         relations: list[ProjectRelation],
         evidence_cards: list[EvidenceCard],
+        enhancer: AgentResultEnhancer | None = None,
     ) -> None:
         self.entities = list(entities)
         self.relations = list(relations)
         self.evidence_cards = list(evidence_cards)
+        self.enhancer = enhancer
 
     def run(self, question: str, mode: QueryMode) -> AgentResult:
         if mode == QueryMode.ARCHITECTURE_TOUR:
-            return self._architecture_tour(question)
-        if mode == QueryMode.IMPACT_ANALYSIS:
-            return self._impact_analysis(question)
-        if mode == QueryMode.RISK_AUDIT:
-            return self._risk_audit(question)
-        return self._evidence_qa(question)
+            result = self._architecture_tour(question)
+        elif mode == QueryMode.IMPACT_ANALYSIS:
+            result = self._impact_analysis(question)
+        elif mode == QueryMode.RISK_AUDIT:
+            result = self._risk_audit(question)
+        else:
+            result = self._evidence_qa(question)
+        return self._enhance_result(result)
 
     def _architecture_tour(self, question: str) -> AgentResult:
         entity_ids = [
@@ -142,6 +204,30 @@ class AgentWorkflow:
 
     def _first_evidence_ids(self, limit: int = 3) -> list[str]:
         return [card.id for card in self.evidence_cards[:limit]]
+
+    def _enhance_result(self, result: AgentResult) -> AgentResult:
+        if self.enhancer is None:
+            return result
+        try:
+            return self.enhancer.enhance(
+                result,
+                evidence_cards=self.evidence_cards,
+                entities=self.entities,
+                relations=self.relations,
+            )
+        except Exception as exc:
+            return replace(
+                result,
+                metadata={
+                    **result.metadata,
+                    "llm": {
+                        "enabled": True,
+                        "provider": self.enhancer.provider,
+                        "fallback": True,
+                        "error": str(exc),
+                    },
+                },
+            )
 
     @staticmethod
     def _unique_ids(values: Iterable[str]) -> list[str]:

@@ -84,10 +84,15 @@ def _render_language_switcher(language: str) -> str:
 def _build_pages(language: str) -> list[st.Page]:
     return [
         st.Page(
+            _page_twinmind_archive,
+            title=t("nav.twinmind_archive", language),
+            icon="🗂️",
+            default=True,
+        ),
+        st.Page(
             _page_overview,
             title=t("nav.overview", language),
             icon="📊",
-            default=True,
         ),
         st.Page(_page_data_browser, title=t("nav.data_browser", language), icon="🔍"),
         st.Page(
@@ -105,11 +110,6 @@ def _build_pages(language: str) -> list[st.Page]:
             _page_evaluation_panel,
             title=t("nav.evaluation_panel", language),
             icon="📏",
-        ),
-        st.Page(
-            _page_twinmind_archive,
-            title=t("nav.twinmind_archive", language),
-            icon="🗂️",
         ),
     ]
 

@@ -390,6 +390,27 @@ class TestDeepSeekLLM:
             
             assert response.content == "DeepSeek response"
             assert response.model == "deepseek-chat"
+
+    def test_chat_passes_json_mode_and_bounded_connect_timeout(self):
+        """Should pass structured-output options and avoid long connect stalls."""
+        settings = MockSettings()
+        llm = DeepSeekLLM(settings, api_key="test-key", timeout=45.0)
+
+        with patch("httpx.Client") as mock_client:
+            mock_client.return_value.__enter__.return_value.post.return_value = (
+                make_mock_response("{}", "deepseek-chat")
+            )
+
+            llm.chat(
+                [Message(role="user", content="Return json.")],
+                response_format={"type": "json_object"},
+            )
+
+            timeout = mock_client.call_args.kwargs["timeout"]
+            assert timeout.connect == 10.0
+            assert timeout.read == 45.0
+            payload = mock_client.return_value.__enter__.return_value.post.call_args.kwargs["json"]
+            assert payload["response_format"] == {"type": "json_object"}
     
     def test_chat_api_error(self):
         """Should raise DeepSeekLLMError on API error."""
