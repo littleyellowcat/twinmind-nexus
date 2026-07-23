@@ -2,23 +2,21 @@
 
 ## TwinMind Nexus（孪生智枢） | 多模态项目数字孪生与自主 Agent 图谱 RAG 平台
 
-**项目描述：** 面向“上传完整代码项目后，自动生成项目数字孪生、理解架构协作并生成证据链报告”的场景，构建 **Hybrid RAG + Knowledge Graph + ReAct Agent + AgentEval** 项目分析平台；系统摄取代码、文档、配置和图片，抽取实体 / 关系 / 证据卡，并通过 **Planner / Tool-Use / Critic / Verifier / Memory** 协同完成架构探索、图谱推理和质量回归。
+**工作汇总：** 负责 TwinMind Nexus 项目数字孪生分析平台的建设工作，完成从项目 ZIP 摄取到代码结构抽取、知识图谱构建、Hybrid RAG 检索、自主 Agent 分析、证据链报告和 AgentEval 质量回归的完整闭环。
 
 **核心职责：**
 
-- **搭建项目数字孪生知识底座：** 针对完整项目难以快速理解的问题，设计代码 / 文档 / 配置 / 图片统一摄取流程，使用 Tree-sitter 抽取 Java、C++、TypeScript/JavaScript、Go、Rust 等多语言结构实体，并构建项目级知识图谱；结果是系统可将上传项目转化为可检索、可推理、可审计的数字孪生档案。
+- 基于 **Project Scanner + Tree-sitter + Archive Builder** 设计项目档案生成链路，将代码、文档、配置和图片统一转换为文件、类、函数、接口、配置项、依赖、证据卡等项目知识对象；支持 Java、C++、TypeScript / JavaScript、Go、Rust 等多语言结构抽取，将上传项目沉淀为可检索、可推理、可审计的数字孪生档案。
 
-- **构建 Hybrid RAG + Knowledge Graph 检索链：** 针对普通 RAG 只能检索文本、缺少结构推理的问题，接入 Chroma dense retrieval、BM25 sparse retrieval 与 RRF 融合排序，并将命中结果扩展到实体邻域、关系和证据卡；结果是 `evaluation_score` 从 `0.5125` 提升到 `0.8583`，`relation_hit_rate` 从 `0.0` 提升到 `0.8333`，`evidence_hit_rate` 从 `0.5417` 提升到 `0.9167`。
+- 构建自主 **ReAct Agent** 工作流，基于 **Planner / Tool-Use / Critic / Verifier / Memory** 将项目理解拆解为入口发现、模块映射、核心实体检查、证据收集和架构总结等任务；真实 DeepSeek mission 完成 **5/5 个分析任务**，证据校验通过，形成 **14 条有证据支撑的项目发现**，未产生不确定结论。
 
-- **设计自主 ReAct Agent 任务循环：** 针对 Agent 容易变成按钮脚本、缺少自主探索的问题，构建 **Planner / ReAct Tool Selection / Critic Retry / Evidence Verifier / Mission Memory** 链路，将架构理解拆成入口发现、展厅映射、核心实体检查、证据收集和总结任务；结果是真实 DeepSeek mission 达到 `5/5 tasks complete`，`verifier accepted`，`supported_finding_count 14`，`uncertain_finding_count 0`。
+- 设计图谱增强 **Hybrid RAG** 检索链路，融合 **Chroma + BM25 + RRF**，并将命中结果扩展到实体邻域、关系链路和证据卡；综合评测分从 **0.5125 提升至 0.8583**，关系命中率从 **0 提升至 0.8333**，证据命中率从 **0.5417 提升至 0.9167**。
 
-- **建立可审计 Agent 证据链与结构化输出机制：** 针对 Agent 报告易无证据、LLM 易输出非 JSON 的问题，要求 finding 绑定 entity / relation / evidence ID，并设计 **JSON mode + schema example + strict regeneration + repair fallback**；结果是 `mission_verifier` 从 `partial` 提升到 `1.0`，`agent_json_repair_count` 从 `3` 降到 `0`，`agent_llm_runtime` 提升到 `1.0`。
+- 建设可审计证据链与反幻觉校验机制，要求 Agent 输出的项目发现绑定实体、关系和证据来源，并在证据不足时执行有限重试和证据回填；任务校验结果从部分通过提升至 **1.0**，报告结论可回溯到图谱节点、关系边和证据卡。
 
-- **构建 AgentEval 质量回归体系：** 针对系统质量只能凭感觉判断的问题，设计覆盖 graph structure、golden-question retrieval、evidence coverage、agent trust、LLM runtime、Hybrid RAG health、mission verifier 的评测门禁；结果是最新 AgentEval `status pass`，`agent_trust 0.88`，`hybrid_rag 1.0`，`mission_verifier 1.0`。
+- 搭建 **AgentEval** 质量回归体系，覆盖检索质量、证据覆盖、Agent 可信度、模型运行状态和任务校验等评测门禁；最新回归结果达到通过状态，结构化输出修复次数从 **3 次降至 0 次**，Agent 可信度达到 **0.88**，任务证据校验达到 **1.0**。
 
-- **实现图谱化项目工作台：** 针对大项目实体多、图谱一次性展示不可读的问题，设计搜索驱动的图谱探索、邻域展开、展厅切换、关系高亮、证据抽屉和 Agent 分析页面；结果是前端从 Streamlit 原型升级为 React Archive Workspace，支持档案总览、图谱探索、Agent 分析和知识宇宙视图，`npm run build` 已通过。
-
-**技术栈：** ReAct Agent, Planner / Tool-Use / Critic / Verifier / Memory, AgentEval, DeepSeek V4-Pro, Knowledge Graph, Hybrid RAG, Chroma, BM25, RRF, Tree-sitter, Ollama Vision, Python, FastAPI, React, TypeScript, Vite, SQLite, Pytest, Playwright.
+**技术栈：** ReAct Agent, Planner / Tool-Use / Critic / Verifier / Memory, AgentEval, DeepSeek V4-Pro, Graph-enhanced Hybrid RAG, Knowledge Graph.
 
 ## 2026-07-01 ReAct Mission And AgentEval Optimization
 
