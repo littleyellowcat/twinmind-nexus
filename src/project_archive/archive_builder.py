@@ -24,6 +24,7 @@ from src.project_archive.types import (
     EvidenceCard,
     ProjectArchiveDraft,
     ProjectEntity,
+    ProjectFile,
     ProjectRelation,
 )
 
@@ -144,6 +145,7 @@ class ArchiveBuilder:
                 *confirmation_items,
             ],
             metadata={
+                "project_rule_sources": _project_rule_sources(files),
                 "ingestion": {
                     "scan_profile": scan_profile,
                     "upload": _load_upload_diagnostics(project_root_path),
@@ -158,6 +160,21 @@ class ArchiveBuilder:
                 }
             },
         )
+
+
+def _project_rule_sources(files: list[ProjectFile]) -> list[dict[str, object]]:
+    sources: list[dict[str, object]] = []
+    for project_file in files:
+        if not project_file.metadata.get("rule_file"):
+            continue
+        sources.append(
+            {
+                "path": project_file.path,
+                "rule_kind": project_file.metadata.get("rule_kind", "project_rule"),
+                "evidence_priority": project_file.metadata.get("evidence_priority", "normal"),
+            }
+        )
+    return sorted(sources, key=lambda item: str(item.get("path", "")))
 
 
 def _build_halls(entities: list[ProjectEntity]) -> list[ArchiveHall]:

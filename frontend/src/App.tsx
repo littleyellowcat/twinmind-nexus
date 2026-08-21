@@ -27,6 +27,8 @@ import * as THREE from "three";
 import {
   compareUniverseProjects,
   cancelArchiveJob,
+  dryRunHarnessArtifactCleanup,
+  dryRunHarnessCommand,
   fetchAgentTaskPlan,
   fetchAgentEvalReport,
   fetchAgentMemory,
@@ -42,6 +44,11 @@ import {
   fetchGraphSummary,
   fetchGraphStoreStatus,
   fetchGraphWorkspaceReport,
+  fetchHarnessArtifactManifest,
+  fetchHarnessCommands,
+  fetchHarnessExport,
+  fetchHarnessRunSummary,
+  fetchHarnessTimeline,
   fetchHybridRagStatus,
   fetchIngestionDiagnostics,
   fetchKnowledgeUniverse,
@@ -99,6 +106,11 @@ import type {
   GraphSummary,
   GraphStoreStatus,
   GraphWorkspaceReport,
+  HarnessArtifactManifest,
+  HarnessCommand,
+  HarnessCommandDryRun,
+  HarnessRunSummary,
+  HarnessTimeline,
   HybridRagStatus,
   IngestionDiagnostics,
   EvaluationHistory,
@@ -5662,12 +5674,14 @@ const systemWarningText = (warning: unknown, locale: Locale) => {
 function SystemConfigPage({
   check,
   error,
+  harnessSummary,
   isLoading,
   locale,
   onRefresh,
 }: {
   check: SystemConfigCheck | null;
   error: string;
+  harnessSummary: HarnessRunSummary | null;
   isLoading: boolean;
   locale: Locale;
   onRefresh: () => void;
@@ -5684,6 +5698,7 @@ function SystemConfigPage({
         configured: "已配置",
         working: "可工作",
         details: "细节",
+        harness: "Harness 运行证据",
         warnings: "提醒",
         lastSuccess: "最近成功",
       }
@@ -5698,6 +5713,7 @@ function SystemConfigPage({
         configured: "Configured",
         working: "Working",
         details: "Details",
+        harness: "Harness run evidence",
         warnings: "Warnings",
         lastSuccess: "Last success",
       };
@@ -5722,6 +5738,35 @@ function SystemConfigPage({
       ) : null}
       {check?.metadata?.runtime_evidence ? (
         <RuntimeEvidencePanel evidence={check.metadata.runtime_evidence as Record<string, unknown>} locale={locale} />
+      ) : null}
+      {harnessSummary ? (
+        <section className="runtime-evidence-panel panel">
+          <div className="panel-heading">
+            <div>
+              <span className="eyebrow">{labels.harness}</span>
+              <h2>{statusLabel(harnessSummary.status, locale)}</h2>
+            </div>
+            <Route size={18} />
+          </div>
+          <p>{harnessSummary.next_best_action}</p>
+          <div className="runtime-evidence-grid">
+            <article>
+              <strong>{locale === "zh" ? "最近运行" : "Last run"}</strong>
+              <span>{String(harnessSummary.last_run.run_id ?? "-")}</span>
+              <span>{String(harnessSummary.last_run.kind ?? harnessSummary.phase)}</span>
+            </article>
+            <article>
+              <strong>{locale === "zh" ? "事件" : "Events"}</strong>
+              <span>{locale === "zh" ? "最新序列" : "Latest sequence"}: {formatNumber(harnessSummary.latest_sequence)}</span>
+              <span>{locale === "zh" ? "产物" : "Artifacts"}: {formatNumber(harnessSummary.artifacts.length)}</span>
+            </article>
+            <article>
+              <strong>{locale === "zh" ? "恢复建议" : "Resume guidance"}</strong>
+              <span>{harnessSummary.resume_available ? harnessSummary.resume_action : "-"}</span>
+              <span>{harnessSummary.errors[0] ?? harnessSummary.warnings[0] ?? "-"}</span>
+            </article>
+          </div>
+        </section>
       ) : null}
       {check ? (
         <section className="system-config-grid">
@@ -5909,15 +5954,33 @@ function EvaluationBenchmarkPanel({
 }
 
 function AgentEvalHarnessPanel({
+  artifacts,
   error,
+  harnessCommands,
+  harnessSummary,
+  harnessTimeline,
+  harnessToolResult,
+  isRunningHarnessTool,
   isRunning,
   locale,
+  onCleanupDryRun,
+  onDryRunLiveCommand,
+  onExport,
   onRun,
   report,
 }: {
+  artifacts: HarnessArtifactManifest | null;
   error: string;
+  harnessCommands: HarnessCommand[];
+  harnessSummary: HarnessRunSummary | null;
+  harnessTimeline: HarnessTimeline | null;
+  harnessToolResult: HarnessCommandDryRun | Record<string, unknown> | null;
+  isRunningHarnessTool: boolean;
   isRunning: boolean;
   locale: Locale;
+  onCleanupDryRun: () => void;
+  onDryRunLiveCommand: () => void;
+  onExport: () => void;
   onRun: () => void;
   report: AgentEvalReport | null;
 }) {
@@ -5935,6 +5998,16 @@ function AgentEvalHarnessPanel({
         duration: "耗时",
         indexed: "RAG 索引",
         unsupported: "未支撑声明",
+        harness: "运行证据",
+        sequence: "事件序列",
+        artifacts: "产物",
+        next: "下一步",
+        liveDryRun: "Live dry-run",
+        export: "导出",
+        cleanup: "清理预检",
+        commands: "命令",
+        timeline: "Timeline",
+        lastTool: "最近工具",
       }
     : {
         title: "AgentEval Harness",
@@ -5949,12 +6022,25 @@ function AgentEvalHarnessPanel({
         duration: "Duration",
         indexed: "RAG index",
         unsupported: "Unsupported claims",
+        harness: "Run evidence",
+        sequence: "Event sequence",
+        artifacts: "Artifacts",
+        next: "Next",
+        liveDryRun: "Live dry-run",
+        export: "Export",
+        cleanup: "Cleanup check",
+        commands: "Commands",
+        timeline: "Timeline",
+        lastTool: "Last tool",
       };
   const metrics = report?.metrics ?? {};
   const score = Number(metrics.evaluation_score ?? 0);
   const indexed = Number(metrics.rag_indexed_chunks ?? 0);
   const candidate = Number(metrics.rag_candidate_chunks ?? 0);
   const unsupported = Number(metrics.trust_unsupported_claims ?? 0);
+  const latestHarnessEvent = harnessTimeline?.timeline.length
+    ? harnessTimeline.timeline[harnessTimeline.timeline.length - 1]?.type
+    : "-";
   return (
     <section className="agent-eval-panel panel">
       <div className="agent-eval-head">
@@ -5973,6 +6059,52 @@ function AgentEvalHarnessPanel({
           <strong>{locale === "zh" ? "AgentEval 失败" : "AgentEval failed"}</strong>
           <span>{error}</span>
         </div>
+      ) : null}
+      {harnessSummary ? (
+        <>
+          <div className="agent-eval-harness-summary">
+            <span>
+              <strong>{statusLabel(harnessSummary.status, locale)}</strong>
+              {labels.harness}
+            </span>
+            <span>
+              <strong>{formatNumber(harnessSummary.latest_sequence)}</strong>
+              {labels.sequence}
+            </span>
+            <span>
+              <strong>{formatNumber(artifacts?.artifacts.length ?? harnessSummary.artifacts.length)}</strong>
+              {labels.artifacts}
+            </span>
+            <span className="agent-eval-harness-next">
+              <strong>{labels.next}</strong>
+              {harnessSummary.next_best_action}
+            </span>
+          </div>
+          <div className="harness-tool-row">
+            <button className="secondary-action compact" disabled={isRunningHarnessTool} onClick={onDryRunLiveCommand} type="button">
+              <Command size={14} />
+              {labels.liveDryRun}
+            </button>
+            <button className="secondary-action compact" disabled={isRunningHarnessTool} onClick={onExport} type="button">
+              <FileArchive size={14} />
+              {labels.export}
+            </button>
+            <button className="secondary-action compact" disabled={isRunningHarnessTool} onClick={onCleanupDryRun} type="button">
+              <ShieldCheck size={14} />
+              {labels.cleanup}
+            </button>
+          </div>
+          <div className="harness-tool-status">
+            <span><strong>{formatNumber(harnessCommands.length)}</strong>{labels.commands}</span>
+            <span><strong>{formatNumber(harnessTimeline?.timeline.length ?? 0)}</strong>{labels.timeline}</span>
+            <span><strong>{String(latestHarnessEvent ?? "-")}</strong>{locale === "zh" ? "最新事件" : "Latest event"}</span>
+          </div>
+          {harnessToolResult ? (
+            <pre className="harness-tool-preview" aria-label={labels.lastTool}>
+              {JSON.stringify(harnessToolResult, null, 2).slice(0, 900)}
+            </pre>
+          ) : null}
+        </>
       ) : null}
       {report ? (
         <>
@@ -7243,6 +7375,12 @@ export function App() {
   const [intelligenceReportError, setIntelligenceReportError] = useState("");
   const [agentTrustReport, setAgentTrustReport] = useState<AgentTrustReport | null>(null);
   const [agentEvalReport, setAgentEvalReport] = useState<AgentEvalReport | null>(null);
+  const [harnessSummary, setHarnessSummary] = useState<HarnessRunSummary | null>(null);
+  const [harnessCommands, setHarnessCommands] = useState<HarnessCommand[]>([]);
+  const [harnessTimeline, setHarnessTimeline] = useState<HarnessTimeline | null>(null);
+  const [harnessArtifacts, setHarnessArtifacts] = useState<HarnessArtifactManifest | null>(null);
+  const [harnessToolResult, setHarnessToolResult] = useState<HarnessCommandDryRun | Record<string, unknown> | null>(null);
+  const [isRunningHarnessTool, setIsRunningHarnessTool] = useState(false);
   const [agentMemory, setAgentMemory] = useState<AgentMemory | null>(null);
   const [isRunningAgentEval, setIsRunningAgentEval] = useState(false);
   const [agentEvalError, setAgentEvalError] = useState("");
@@ -7322,6 +7460,14 @@ export function App() {
     setReactMission(nextMission);
   };
 
+  const resetHarnessState = () => {
+    setAgentEvalReport(null);
+    setHarnessSummary(null);
+    setHarnessTimeline(null);
+    setHarnessArtifacts(null);
+    setHarnessToolResult(null);
+  };
+
   const loadSystemConfigCheck = async () => {
     setIsLoadingSystemConfig(true);
     setSystemConfigError("");
@@ -7396,7 +7542,7 @@ export function App() {
       setIntelligenceReport(null);
       setIntelligenceReportError("");
       setAgentTrustReport(null);
-      setAgentEvalReport(null);
+      resetHarnessState();
       setAgentMemory(null);
       setAgentEvalError("");
       setEvaluationReport(null);
@@ -7530,7 +7676,7 @@ export function App() {
     setIntelligenceReport(null);
     setIntelligenceReportError("");
     setAgentTrustReport(null);
-    setAgentEvalReport(null);
+    resetHarnessState();
     setAgentMemory(null);
     setAgentEvalError("");
     setEvaluationReport(null);
@@ -7572,6 +7718,50 @@ export function App() {
       .catch(() => {
         if (archiveToken === archiveRequestTokenRef.current && activeProjectIdRef.current === draft.projectId) {
           setAgentEvalReport(null);
+        }
+      });
+    fetchHarnessRunSummary(draft.projectId)
+      .then((summary) => {
+        if (archiveToken === archiveRequestTokenRef.current && activeProjectIdRef.current === draft.projectId) {
+          setHarnessSummary(summary);
+        }
+      })
+      .catch(() => {
+        if (archiveToken === archiveRequestTokenRef.current && activeProjectIdRef.current === draft.projectId) {
+          setHarnessSummary(null);
+        }
+      });
+    fetchHarnessTimeline(draft.projectId)
+      .then((timeline) => {
+        if (archiveToken === archiveRequestTokenRef.current && activeProjectIdRef.current === draft.projectId) {
+          setHarnessTimeline(timeline);
+        }
+      })
+      .catch(() => {
+        if (archiveToken === archiveRequestTokenRef.current && activeProjectIdRef.current === draft.projectId) {
+          setHarnessTimeline(null);
+        }
+      });
+    fetchHarnessArtifactManifest(draft.projectId)
+      .then((manifest) => {
+        if (archiveToken === archiveRequestTokenRef.current && activeProjectIdRef.current === draft.projectId) {
+          setHarnessArtifacts(manifest);
+        }
+      })
+      .catch(() => {
+        if (archiveToken === archiveRequestTokenRef.current && activeProjectIdRef.current === draft.projectId) {
+          setHarnessArtifacts(null);
+        }
+      });
+    fetchHarnessCommands()
+      .then((commands) => {
+        if (archiveToken === archiveRequestTokenRef.current && activeProjectIdRef.current === draft.projectId) {
+          setHarnessCommands(commands);
+        }
+      })
+      .catch(() => {
+        if (archiveToken === archiveRequestTokenRef.current && activeProjectIdRef.current === draft.projectId) {
+          setHarnessCommands([]);
         }
       });
     fetchAgentMemory(draft.projectId)
@@ -7718,7 +7908,7 @@ export function App() {
     setIntelligenceReport(null);
     setIntelligenceReportError("");
     setAgentTrustReport(null);
-    setAgentEvalReport(null);
+    resetHarnessState();
     setAgentMemory(null);
     setAgentEvalError("");
     setEvaluationReport(null);
@@ -7984,15 +8174,21 @@ export function App() {
       });
       if (activeProjectIdRef.current !== projectId) return;
       setAgentEvalReport(report);
-      const [memory, evaluation, trust] = await Promise.all([
+      const [memory, evaluation, trust, summary, timeline, artifacts] = await Promise.all([
         fetchAgentMemory(projectId).catch(() => null),
         fetchArchiveEvaluation(projectId).catch(() => null),
         fetchAgentTrustReport(projectId).catch(() => null),
+        fetchHarnessRunSummary(projectId).catch(() => null),
+        fetchHarnessTimeline(projectId).catch(() => null),
+        fetchHarnessArtifactManifest(projectId).catch(() => null),
       ]);
       if (activeProjectIdRef.current !== projectId) return;
       setAgentMemory(memory);
       setEvaluationReport(evaluation);
       setAgentTrustReport(trust);
+      setHarnessSummary(summary);
+      setHarnessTimeline(timeline);
+      setHarnessArtifacts(artifacts);
       fetchEvaluationHistory(projectId)
         .then((history) => {
           if (activeProjectIdRef.current === projectId) setEvaluationHistory(history);
@@ -8012,6 +8208,89 @@ export function App() {
       notify(`${locale === "zh" ? "AgentEval 失败" : "AgentEval failed"}: ${message}`);
     } finally {
       if (activeProjectIdRef.current === projectId) setIsRunningAgentEval(false);
+    }
+  };
+
+  const handleHarnessCommandDryRun = async () => {
+    if (!archiveDraft) {
+      notify(String(copy[locale].noArchiveSelected));
+      return;
+    }
+    const command = harnessCommands.find((item) => item.id === "agent-eval-live");
+    setIsRunningHarnessTool(true);
+    setAgentEvalError("");
+    try {
+      const plan = await dryRunHarnessCommand("agent-eval-live", {
+        project_id: archiveDraft.projectId,
+        provider: agentStatus?.provider ?? "configured",
+        model: agentStatus?.model ?? null,
+        llm_enabled: agentStatus?.llm_enabled ?? false,
+      });
+      if (activeProjectIdRef.current !== archiveDraft.projectId) return;
+      setHarnessToolResult({
+        ...plan,
+        command_title: command?.title ?? "AgentEval Live Provider",
+      });
+      notify(locale === "zh" ? "已生成 Harness dry-run 计划" : "Harness dry-run plan generated");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setAgentEvalError(message);
+      notify(`${locale === "zh" ? "Harness dry-run 失败" : "Harness dry-run failed"}: ${message}`);
+    } finally {
+      setIsRunningHarnessTool(false);
+    }
+  };
+
+  const handleHarnessExport = async () => {
+    if (!archiveDraft) {
+      notify(String(copy[locale].noArchiveSelected));
+      return;
+    }
+    setIsRunningHarnessTool(true);
+    setAgentEvalError("");
+    try {
+      const exported = await fetchHarnessExport(archiveDraft.projectId);
+      if (activeProjectIdRef.current !== archiveDraft.projectId) return;
+      setHarnessToolResult({
+        kind: "harness_export",
+        metrics: exported?.metrics ?? {},
+        schema_version: exported?.schema_version,
+      });
+      notify(locale === "zh" ? "Harness export 已生成预览" : "Harness export preview generated");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setAgentEvalError(message);
+      notify(`${locale === "zh" ? "Harness export 失败" : "Harness export failed"}: ${message}`);
+    } finally {
+      setIsRunningHarnessTool(false);
+    }
+  };
+
+  const handleHarnessArtifactCleanupDryRun = async () => {
+    if (!archiveDraft) {
+      notify(String(copy[locale].noArchiveSelected));
+      return;
+    }
+    setIsRunningHarnessTool(true);
+    setAgentEvalError("");
+    try {
+      const cleanup = await dryRunHarnessArtifactCleanup(archiveDraft.projectId);
+      const manifest = await fetchHarnessArtifactManifest(archiveDraft.projectId).catch(() => null);
+      if (activeProjectIdRef.current !== archiveDraft.projectId) return;
+      setHarnessArtifacts(manifest);
+      setHarnessToolResult({
+        kind: "artifact_cleanup_dry_run",
+        dry_run: cleanup?.dry_run,
+        candidates: cleanup?.candidates?.length ?? 0,
+        metrics: cleanup?.metrics ?? {},
+      });
+      notify(locale === "zh" ? "已完成 artifact cleanup dry-run" : "Artifact cleanup dry-run complete");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setAgentEvalError(message);
+      notify(`${locale === "zh" ? "Artifact dry-run 失败" : "Artifact dry-run failed"}: ${message}`);
+    } finally {
+      setIsRunningHarnessTool(false);
     }
   };
 
@@ -8516,6 +8795,11 @@ export function App() {
         <SystemConfigPage
           check={systemConfigCheck}
           error={systemConfigError}
+          harnessSummary={
+            harnessSummary?.project_id === (archiveDraft?.projectId ?? selectedArchiveId)
+              ? harnessSummary
+              : null
+          }
           isLoading={isLoadingSystemConfig}
           locale={locale}
           onRefresh={loadSystemConfigCheck}
@@ -8585,9 +8869,30 @@ export function App() {
               }
             />
             <AgentEvalHarnessPanel
+              artifacts={
+                harnessArtifacts?.project_id === archiveDraft.projectId
+                  ? harnessArtifacts
+                  : null
+              }
               error={agentEvalError}
+              harnessCommands={harnessCommands}
+              harnessSummary={
+                harnessSummary?.project_id === archiveDraft.projectId
+                  ? harnessSummary
+                  : null
+              }
+              harnessTimeline={
+                harnessTimeline?.project_id === archiveDraft.projectId
+                  ? harnessTimeline
+                  : null
+              }
+              harnessToolResult={harnessToolResult}
+              isRunningHarnessTool={isRunningHarnessTool}
               isRunning={isRunningAgentEval}
               locale={locale}
+              onCleanupDryRun={handleHarnessArtifactCleanupDryRun}
+              onDryRunLiveCommand={handleHarnessCommandDryRun}
+              onExport={handleHarnessExport}
               onRun={handleRunAgentEval}
               report={
                 agentEvalReport?.project_id === archiveDraft.projectId

@@ -393,9 +393,84 @@ export type AgentEvalReport = {
   quality_gates: AgentEvalGate[];
   regression: AgentEvalRegression;
   recommendations: string[];
-  artifacts: Record<string, string>;
+  artifacts: Record<string, string | Record<string, unknown>>;
   metadata: Record<string, unknown>;
   memory_update?: Record<string, unknown>;
+};
+
+export type HarnessRunSummary = {
+  project_id: string;
+  status: string;
+  phase: string;
+  last_event_sequence: number;
+  latest_sequence: number;
+  last_run: Record<string, unknown>;
+  last_failure: Record<string, unknown> | null;
+  artifacts: Array<Record<string, unknown>>;
+  warnings: string[];
+  errors: string[];
+  resume_available: boolean;
+  resume_action: string;
+  next_best_action: string;
+  metrics: Record<string, unknown>;
+};
+
+export type HarnessCommand = {
+  id: string;
+  title: string;
+  description: string;
+  action: string;
+  resource_template: string;
+  requires_confirmation: boolean;
+};
+
+export type HarnessTimelineItem = {
+  id: string;
+  project_id: string;
+  run_id: string;
+  type: string;
+  category: string;
+  sequence: number;
+  created_at: string;
+  data: Record<string, unknown>;
+};
+
+export type HarnessTimeline = {
+  project_id: string;
+  timeline: HarnessTimelineItem[];
+  metrics: Record<string, number>;
+};
+
+export type HarnessArtifactManifest = {
+  project_id: string;
+  artifact_root?: string;
+  artifacts: Array<Record<string, unknown>>;
+  metrics: Record<string, number>;
+};
+
+export type HarnessArtifactValidation = {
+  project_id: string;
+  status: string;
+  artifacts: Array<Record<string, unknown>>;
+  orphans: Array<Record<string, unknown>>;
+  metrics: Record<string, number>;
+};
+
+export type HarnessArtifactCleanup = {
+  project_id: string;
+  dry_run: boolean;
+  candidates: Array<Record<string, unknown>>;
+  deleted: Array<Record<string, unknown>>;
+  metrics: Record<string, number>;
+};
+
+export type HarnessCommandDryRun = {
+  id: string;
+  dry_run: boolean;
+  executed: boolean;
+  status: string;
+  message: string;
+  policy: Record<string, unknown>;
 };
 
 export type AgentMemoryItem = {

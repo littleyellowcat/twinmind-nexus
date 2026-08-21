@@ -60,13 +60,20 @@ def main() -> None:
             if args.run_evaluation:
                 service.run_archive_evaluation(project_id)
             service.generate_project_intelligence_report(project_id)
+            harness_summary = _safe_dict(lambda: service.harness_run_summary(project_id))
+            harness_export = _safe_dict(lambda: service.harness_export(project_id))
+            artifact_validation = _safe_dict(lambda: service.harness_artifact_validation(project_id))
             rows.append(_project_row(
                 draft=draft,
+                artifact_validation=artifact_validation,
                 diagnostics=diagnostics,
                 duration_seconds=time.perf_counter() - started_at,
                 graph_report=graph_report,
+                harness_export=harness_export,
                 hybrid_status=hybrid_status,
+                harness_summary=harness_summary,
                 multimodal=multimodal,
+                provider_status=service.agent_status(),
                 status="complete",
                 zip_path=zip_path,
             ))
@@ -121,13 +128,20 @@ def _existing_project_row(service: ProjectArchiveService, project_id: str, zip_p
     diagnostics = _safe_dict(lambda: service.ingestion_diagnostics(project_id))
     hybrid_status = _safe_dict(lambda: service.hybrid_rag_status(project_id))
     multimodal = _safe_dict(lambda: service.multimodal_insights(project_id))
+    harness_summary = _safe_dict(lambda: service.harness_run_summary(project_id))
+    harness_export = _safe_dict(lambda: service.harness_export(project_id))
+    artifact_validation = _safe_dict(lambda: service.harness_artifact_validation(project_id))
     return _project_row(
         draft=draft,
+        artifact_validation=artifact_validation,
         diagnostics=diagnostics,
         duration_seconds=0.0,
         graph_report=graph_report,
+        harness_export=harness_export,
         hybrid_status=hybrid_status,
+        harness_summary=harness_summary,
         multimodal=multimodal,
+        provider_status=service.agent_status(),
         status="skipped",
         zip_path=zip_path,
     )
@@ -135,12 +149,16 @@ def _existing_project_row(service: ProjectArchiveService, project_id: str, zip_p
 
 def _project_row(
     *,
+    artifact_validation: dict,
     draft,
     diagnostics: dict,
     duration_seconds: float,
     graph_report: dict,
+    harness_export: dict,
     hybrid_status: dict,
+    harness_summary: dict,
     multimodal: dict,
+    provider_status: dict,
     status: str,
     zip_path: Path,
 ) -> dict:
@@ -170,6 +188,11 @@ def _project_row(
         warnings.append("Hybrid RAG index is empty.")
     if int(multimodal.get("image_count", 0) or 0) and not int(multimodal.get("vision_supported", 0) or 0):
         warnings.append("Image evidence exists but vision support did not run.")
+    orphan_count = len(artifact_validation.get("orphans", []) or []) if isinstance(artifact_validation, dict) else 0
+    if orphan_count:
+        warnings.append(f"{orphan_count} orphan harness artifact(s)")
+    if harness_export.get("error"):
+        warnings.append(f"Harness export unavailable: {harness_export['error']}")
 
     row_status = status
     if status == "complete":
@@ -191,6 +214,12 @@ def _project_row(
         "grade": quality.get("grade", "E"),
         "health": round(float(health.get("score", 0) or 0), 2),
         "hybrid_chunks": int(hybrid_status.get("indexed_chunks", 0) or 0),
+        "harness": _harness_row_summary(harness_summary),
+        "harness_export_events": int(harness_export.get("metrics", {}).get("events", 0) or 0)
+        if isinstance(harness_export.get("metrics"), dict)
+        else 0,
+        "artifact_orphans": orphan_count,
+        "provider": _provider_row_summary(provider_status),
         "image_count": int(multimodal.get("image_count", 0) or 0),
         "vision_supported": int(multimodal.get("vision_supported", 0) or 0),
         "duration_seconds": round(duration_seconds, 3),
@@ -200,6 +229,31 @@ def _project_row(
             *[str(item) for item in diagnostics.get("recommendations", [])],
         ])[:8],
     }
+
+
+def _harness_row_summary(harness_summary: dict) -> dict:
+    if not isinstance(harness_summary, dict) or harness_summary.get("error"):
+        return {
+            "status": "missing",
+            "latest_sequence": 0,
+            "artifacts": 0,
+            "next_best_action": str(harness_summary.get("error", "")) if isinstance(harness_summary, dict) else "",
+        }
+    return {
+        "status": str(harness_summary.get("status", "idle")),
+        "latest_sequence": int(harness_summary.get("latest_sequence", 0) or 0),
+        "artifacts": len(harness_summary.get("artifacts", []) or []),
+        "next_best_action": str(harness_summary.get("next_best_action", "")),
+    }
+
+
+def _provider_row_summary(provider_status: dict) -> str:
+    if not isinstance(provider_status, dict):
+        return "unknown"
+    provider = str(provider_status.get("provider") or "unknown")
+    mode = str(provider_status.get("mode") or "")
+    enabled = "enabled" if provider_status.get("llm_enabled") else "fallback"
+    return "/".join(item for item in (provider, mode, enabled) if item)
 
 
 def _unique(items: list[str]) -> list[str]:
@@ -238,12 +292,13 @@ def _markdown_report(rows: list[dict], stress: dict) -> str:
         "",
         "## Projects",
         "",
-        "| Project | Status | Entities | Relations | Evidence | Halls | Sparse Halls | Quality | Health | Hybrid Chunks | Images | Vision | Notes |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|",
+        "| Project | Status | Entities | Relations | Evidence | Halls | Sparse Halls | Quality | Health | Hybrid Chunks | Harness | Seq | Artifacts | Export Events | Orphans | Provider | Images | Vision | Notes |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---:|---:|---|",
     ])
     for row in rows:
+        harness = row.get("harness", {}) if isinstance(row.get("harness"), dict) else {}
         lines.append(
-            "| {project} | {status} | {entities} | {relations} | {evidence} | {halls} | {sparse_halls} | {quality} | {health} | {hybrid_chunks} | {image_count} | {vision_supported} | {notes} |".format(
+            "| {project} | {status} | {entities} | {relations} | {evidence} | {halls} | {sparse_halls} | {quality} | {health} | {hybrid_chunks} | {harness_status} | {harness_sequence} | {harness_artifacts} | {export_events} | {orphans} | {provider} | {image_count} | {vision_supported} | {notes} |".format(
                 project=row.get("project_id", ""),
                 status=row.get("status", ""),
                 entities=row.get("entities", 0),
@@ -254,6 +309,12 @@ def _markdown_report(rows: list[dict], stress: dict) -> str:
                 quality=row.get("quality", "-"),
                 health=row.get("health", "-"),
                 hybrid_chunks=row.get("hybrid_chunks", 0),
+                harness_status=harness.get("status", "missing"),
+                harness_sequence=harness.get("latest_sequence", 0),
+                harness_artifacts=harness.get("artifacts", 0),
+                export_events=row.get("harness_export_events", 0),
+                orphans=row.get("artifact_orphans", 0),
+                provider=_table_text(str(row.get("provider", ""))),
                 image_count=row.get("image_count", 0),
                 vision_supported=row.get("vision_supported", 0),
                 notes=_table_text(row.get("error") or "; ".join(row.get("warnings", [])) or f"grade={row.get('grade', '-')}"),

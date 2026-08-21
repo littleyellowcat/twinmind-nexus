@@ -178,3 +178,28 @@ cd "/Users/kitten/MultimodalRAG/TwinMind Archive"
 ```text
 docs/twinmind_archive_finalization_plan.md
 ```
+
+## 8. Harness 调试
+
+TwinMind 现在会为 AgentEval、Agent mission 和长 trace 生成 opencode 风格的 harness 证据：
+
+- `harness_events.jsonl`：项目级事件流，包含 run start/complete/fail、governance 和 artifact 记录
+- `harness_artifacts/`：长报告和完整 trace 的全文落盘目录，API 只返回预览、hash、大小和路径
+- `/api/archives/<project-id>/harness/summary`：最近运行状态、失败原因、产物、warning/error 和下一步建议
+- `/api/harness/capabilities`：Agent 角色能力矩阵和治理策略
+- `/api/harness/policy-check`：对 live model、external API、paid operation 等做 dry-run 风险判断
+
+本地排查可以不启动后端，直接用标准库脚本：
+
+```bash
+python3 scripts/harness_doctor.py --storage-dir data/project_archive --project-id <project-id>
+python3 scripts/harness_events.py <project-id> --storage-dir data/project_archive --limit 20
+```
+
+如果某次 Agent mission 的 trace 很长，可以用：
+
+```text
+GET /api/agent-missions/<mission-id>/trace-artifact
+```
+
+它会把完整 trace 保存成 harness artifact，并返回 `sha256`、`bytes`、`preview` 和完整文件路径。

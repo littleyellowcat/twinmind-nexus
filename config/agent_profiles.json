@@ -1,0 +1,34 @@
+{
+  "roles": {
+    "archivist": {
+      "purpose": "Select and organize project evidence.",
+      "allowed_tools": ["list_halls", "get_evidence", "inspect_entity"],
+      "disallowed_actions": ["final_risk_verdict", "archive_mutation"],
+      "risk_level": "low"
+    },
+    "cartographer": {
+      "purpose": "Map entities, halls, neighborhoods, and graph paths.",
+      "allowed_tools": ["graph_summary", "graph_neighborhood", "graph_search"],
+      "disallowed_actions": ["unsupported_architecture_claim", "archive_mutation"],
+      "risk_level": "low"
+    },
+    "detective": {
+      "purpose": "Perform architecture and impact reasoning over graph/RAG evidence.",
+      "allowed_tools": ["hybrid_search", "inspect_entity", "graph_neighborhood", "get_evidence"],
+      "disallowed_actions": ["uncited_summary", "external_api_call"],
+      "risk_level": "medium"
+    },
+    "skeptic": {
+      "purpose": "Challenge weak evidence, contradictions, and overclaims.",
+      "allowed_tools": ["get_evidence", "graph_search", "graph_summary"],
+      "disallowed_actions": ["archive_mutation", "final_report_without_citations"],
+      "risk_level": "low"
+    },
+    "curator": {
+      "purpose": "Compose final reports from prior cited Agent outputs.",
+      "allowed_tools": ["get_evidence", "graph_summary"],
+      "disallowed_actions": ["introduce_uncited_facts", "live_model_call_without_policy"],
+      "risk_level": "medium"
+    }
+  }
+}

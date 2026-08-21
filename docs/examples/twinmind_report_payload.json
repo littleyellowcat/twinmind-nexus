@@ -1,0 +1,19 @@
+{
+  "project_id": "sample",
+  "status": "complete",
+  "summary": {
+    "entities": 3,
+    "relations": 2,
+    "evidence": 1
+  },
+  "harness": {
+    "status": "complete",
+    "latest_sequence": 4
+  },
+  "artifacts": [
+    {
+      "kind": "harness_export",
+      "path": "export.json"
+    }
+  ]
+}

@@ -1,0 +1,49 @@
+{
+  "rules": [
+    {
+      "id": "deny-coding-agent-tools",
+      "effect": "deny",
+      "tool": [
+        "apply_patch",
+        "bash",
+        "deploy",
+        "file_edit",
+        "file_write",
+        "git_push",
+        "patch",
+        "shell"
+      ],
+      "action": "*",
+      "resource": "*",
+      "reason": "Forbidden coding-agent tool is outside TwinMind's analysis boundary."
+    },
+    {
+      "id": "ask-live-model",
+      "effect": "ask",
+      "action": "live_model_call",
+      "resource": "provider:*",
+      "reason": "Live model calls may use credentials, network, or paid infrastructure."
+    },
+    {
+      "id": "ask-external-api",
+      "effect": "ask",
+      "action": "external_api_call",
+      "resource": "*",
+      "reason": "External API calls require explicit confirmation."
+    },
+    {
+      "id": "deny-production",
+      "effect": "deny",
+      "action": "production_operation",
+      "resource": "*",
+      "reason": "Production mutation is denied from TwinMind harness automation."
+    },
+    {
+      "id": "allow-local-read-write",
+      "effect": "allow",
+      "action": ["read_only", "local_artifact_write"],
+      "resource": "*",
+      "reason": "Local archive reads and harness artifact writes are inside the evidence boundary."
+    }
+  ]
+}

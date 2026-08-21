@@ -65,7 +65,9 @@ LANGUAGE_BY_SUFFIX = {
 }
 
 LANGUAGE_BY_FILENAME = {
+    "AGENTS.md": "markdown",
     "Dockerfile": "dockerfile",
+    "llms.txt": "text",
     "docker-compose.yml": "yaml",
     "docker-compose.yaml": "yaml",
     "go.mod": "go_mod",
@@ -202,7 +204,10 @@ class ProjectScanner:
                     path=relative_path,
                     language=language,
                     text=text,
-                    metadata={"size": size},
+                    metadata={
+                        "size": size,
+                        **_project_rule_metadata(relative_path),
+                    },
                 )
             )
 
@@ -287,6 +292,30 @@ def _matches_path_filter(relative_path: str, filters: Iterable[str]) -> bool:
 def _stable_file_id(relative_path: str) -> str:
     digest = hashlib.sha1(relative_path.encode("utf-8")).hexdigest()[:12]
     return f"file_{digest}"
+
+
+def _project_rule_metadata(relative_path: str) -> dict[str, Any]:
+    name = Path(relative_path).name.lower()
+    normalized = relative_path.strip("/").lower()
+    if name == "agents.md":
+        return {
+            "rule_file": True,
+            "rule_kind": "agents",
+            "evidence_priority": "high",
+        }
+    if name == "llms.txt":
+        return {
+            "rule_file": True,
+            "rule_kind": "llms",
+            "evidence_priority": "high",
+        }
+    if normalized == "docs/twinmind_engineering_contract.md":
+        return {
+            "rule_file": True,
+            "rule_kind": "engineering_contract",
+            "evidence_priority": "high",
+        }
+    return {}
 
 
 def _looks_binary(path: Path) -> bool:

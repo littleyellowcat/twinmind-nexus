@@ -14,7 +14,10 @@ from typing import List, Dict, Optional, Any
 from collections import Counter
 import re
 
-import jieba
+try:
+    import jieba
+except ModuleNotFoundError:  # pragma: no cover - optional tokenizer fallback.
+    jieba = None  # type: ignore[assignment]
 
 from src.core.types import Chunk
 
@@ -146,8 +149,7 @@ class SparseEncoder:
         """
         tokens: List[str] = []
 
-        # Use jieba to segment the text (handles both Chinese and English)
-        raw_tokens = jieba.lcut(text)
+        raw_tokens = _segment_text(text)
 
         # Clean tokens: keep only alphanumeric and Chinese characters
         for token in raw_tokens:
@@ -213,3 +215,9 @@ class SparseEncoder:
             "avg_doc_length": avg_doc_length,
             "document_frequency": doc_freq,
         }
+
+
+def _segment_text(text: str) -> List[str]:
+    if jieba is not None:
+        return list(jieba.lcut(text))
+    return re.findall(r"[A-Za-z0-9_]+|[\u4e00-\u9fff]", text)

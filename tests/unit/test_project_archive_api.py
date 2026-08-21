@@ -239,12 +239,18 @@ def test_agent_eval_harness_run_persists_report_and_memory(tmp_path: Path) -> No
     assert payload["quality_gates"]
     assert payload["regression"]["status"] == "baseline"
     assert payload["memory_update"]["run_count"] == 1
+    assert payload["artifacts"]["agent_eval_report"]["sha256"]
+    assert payload["artifacts"]["agent_eval_report"]["bytes"] > 0
+    assert "preview" in payload["artifacts"]["agent_eval_report"]
     assert (tmp_path / "sample" / "agent_eval_report.json").exists()
     assert (tmp_path / "sample" / "agent_eval_history.json").exists()
     assert (tmp_path / "sample" / "agent_memory.json").exists()
+    assert (tmp_path / "sample" / "harness_events.jsonl").exists()
 
     reload_response = client.get("/api/archives/sample/agent-eval")
     memory_response = client.get("/api/archives/sample/agent-memory")
+    events_response = client.get("/api/archives/sample/harness/events")
+    summary_response = client.get("/api/archives/sample/harness/summary")
 
     assert reload_response.status_code == 200
     assert reload_response.json()["id"] == payload["id"]
@@ -253,6 +259,127 @@ def test_agent_eval_harness_run_persists_report_and_memory(tmp_path: Path) -> No
     assert memory["project_id"] == "sample"
     assert memory["facts"]
     assert memory["harness_runs"][0]["id"] == payload["id"]
+    assert events_response.status_code == 200
+    event_types = [event["type"] for event in events_response.json()["events"]]
+    assert "run.started" in event_types
+    assert "artifact.persisted" in event_types
+    assert "run.completed" in event_types
+    assert summary_response.status_code == 200
+    summary = summary_response.json()
+    assert summary["project_id"] == "sample"
+    assert summary["last_run"]["run_id"] == payload["id"]
+    assert summary["latest_sequence"] >= 1
+    assert summary["artifacts"]
+    assert summary["resume_action"] == "rerun_agent_eval_harness"
+
+
+def test_harness_capabilities_endpoint_exposes_governance_and_roles(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+
+    response = client.get("/api/harness/capabilities")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["governance"]["default_rules"]["live_model_call"] == "ask"
+    roles = {role["role"] for role in payload["roles"]}
+    assert {"archivist", "cartographer", "detective", "skeptic", "curator"} <= roles
+    all_tools = {
+        tool
+        for role in payload["roles"]
+        for tool in role["allowed_tools"]
+    }
+    assert "bash" not in all_tools
+    assert "file_write" not in all_tools
+    assert payload["governance"]["provider_policy"]["tests"]["real_external_calls_disabled_by_default"] is True
+
+
+def test_harness_policy_check_endpoint_returns_dry_run_decision(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+
+    response = client.post(
+        "/api/harness/policy-check",
+        json={"action": "live_model_call", "resource": "provider:deepseek"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["dry_run"] is True
+    assert payload["decision"]["effect"] == "ask"
+    assert payload["requires_confirmation"] is True
+    assert payload["provider"]["provider"]
+    serialized = json.dumps(payload)
+    assert "api_key" not in serialized
+    assert "secret" not in serialized
+
+
+def test_harness_policy_profiles_and_command_endpoints(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+
+    policy = client.get("/api/harness/policy")
+    profiles = client.get("/api/harness/agent-profiles")
+    commands = client.get("/api/harness/commands")
+    dry_run = client.post(
+        "/api/harness/commands/agent-eval-live/dry-run",
+        json={"parameters": {"project_id": "sample"}},
+    )
+
+    assert policy.status_code == 200
+    assert any(rule["id"] == "ask-live-model" for rule in policy.json()["rules"])
+    assert profiles.status_code == 200
+    assert "detective" in {role["role"] for role in profiles.json()["roles"]}
+    assert commands.status_code == 200
+    assert {"doctor", "events", "export-harness"} <= {
+        command["id"] for command in commands.json()["commands"]
+    }
+    assert dry_run.status_code == 200
+    assert dry_run.json()["executed"] is False
+    assert dry_run.json()["policy"]["decision"]["effect"] == "ask"
+
+
+def test_harness_export_and_artifact_endpoints_redact_local_paths(tmp_path: Path) -> None:
+    from src.project_archive.harness_artifacts import HarnessArtifactStore
+    from src.project_archive.harness_events import HarnessEventStore
+
+    client = _client(tmp_path)
+    event_store = HarnessEventStore(tmp_path)
+    event_store.append(
+        project_id="sample",
+        run_id="run-1",
+        event_type="run.started",
+        data={"kind": "query"},
+    )
+    artifact = HarnessArtifactStore(tmp_path).persist_text(
+        project_id="sample",
+        run_id="run-1",
+        kind="query_trace",
+        content="trace",
+    )
+    event_store.append(
+        project_id="sample",
+        run_id="run-1",
+        event_type="artifact.persisted",
+        data=artifact.to_dict(),
+    )
+    orphan_dir = tmp_path / "sample" / "harness_artifacts" / "orphan"
+    orphan_dir.mkdir(parents=True)
+    (orphan_dir / "old.txt").write_text("old", encoding="utf-8")
+
+    timeline = client.get("/api/archives/sample/harness/timeline")
+    export = client.get("/api/archives/sample/harness/export")
+    artifacts = client.get("/api/archives/sample/harness/artifacts")
+    validation = client.get("/api/archives/sample/harness/artifacts/validation")
+    cleanup = client.post("/api/archives/sample/harness/artifacts/cleanup-dry-run")
+
+    assert timeline.status_code == 200
+    assert timeline.json()["timeline"][0]["category"] == "run"
+    assert export.status_code == 200
+    assert str(tmp_path) not in json.dumps(export.json())
+    assert artifacts.status_code == 200
+    assert artifacts.json()["artifacts"][0]["artifact_id"] == artifact.artifact_id
+    assert validation.status_code == 200
+    assert validation.json()["orphans"]
+    assert cleanup.status_code == 200
+    assert cleanup.json()["dry_run"] is True
 
 
 def test_agent_eval_harness_second_run_checks_regression(tmp_path: Path) -> None:
@@ -943,6 +1070,7 @@ def test_agent_mission_endpoints_return_mission_and_trace(
 
     loaded = client.get(f"/api/agent-missions/{mission['id']}")
     trace = client.get(f"/api/agent-missions/{mission['id']}/trace")
+    trace_artifact = client.get(f"/api/agent-missions/{mission['id']}/trace-artifact")
     visualization = client.get(f"/api/agent-missions/{mission['id']}/visualization")
     stopped = client.post(f"/api/agent-missions/{mission['id']}/stop")
 
@@ -952,6 +1080,12 @@ def test_agent_mission_endpoints_return_mission_and_trace(
     assert loaded_payload["trace_events"]
     assert trace.status_code == 200
     assert trace.json()["trace_events"]
+    assert trace_artifact.status_code == 200
+    trace_artifact_payload = trace_artifact.json()
+    assert trace_artifact_payload["mission_id"] == mission["id"]
+    assert trace_artifact_payload["artifact"]["kind"] == "agent_mission_trace"
+    assert trace_artifact_payload["artifact"]["sha256"]
+    assert "preview" in trace_artifact_payload["artifact"]
     assert visualization.status_code == 200
     visual_payload = visualization.json()
     assert visual_payload["mission_id"] == mission["id"]
@@ -970,6 +1104,7 @@ def test_agent_mission_endpoints_return_404_for_unknown_mission(
     responses = [
         client.get(f"/api/agent-missions/{mission_id}"),
         client.get(f"/api/agent-missions/{mission_id}/trace"),
+        client.get(f"/api/agent-missions/{mission_id}/trace-artifact"),
         client.get(f"/api/agent-missions/{mission_id}/visualization"),
         client.post(f"/api/agent-missions/{mission_id}/stop"),
     ]
@@ -1151,6 +1286,11 @@ def test_upload_archive_ingests_project_zip(tmp_path: Path, monkeypatch) -> None
     assert "hybrid_rag" in query_payload["metadata"]
     assert "evidence_modalities" in query_payload["metadata"]
     assert "cited_image_evidence_count" in query_payload["metadata"]
+    events_response = client.get("/api/archives/demo-project/harness/events")
+    assert events_response.status_code == 200
+    assert "query.completed" in {
+        event["type"] for event in events_response.json()["events"]
+    }
 
 
 def test_upload_archive_keeps_monorepo_source_layouts(

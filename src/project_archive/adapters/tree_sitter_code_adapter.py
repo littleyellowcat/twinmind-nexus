@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
@@ -90,7 +91,7 @@ class TreeSitterCodeAdapter(BaseLanguageAdapter):
         )
         extraction = AdapterExtraction(entities=[file_entity])
         if self._parser is None:
-            return extraction
+            return _regex_fallback_extract(project_file, file_entity)
 
         source_bytes = project_file.text.encode("utf-8", errors="replace")
         tree = self._parser.parse(source_bytes)
@@ -346,6 +347,182 @@ def _parser_for_language(language: str) -> Parser | None:
         return Parser(Language(language_capsule))
     except Exception:
         return None
+
+
+def _regex_fallback_extract(
+    project_file: ProjectFile,
+    file_entity: ProjectEntity,
+) -> AdapterExtraction:
+    extraction = AdapterExtraction(entities=[file_entity])
+    lines = project_file.text.splitlines()
+    if project_file.language == "java":
+        _add_java_regex_imports(extraction, project_file, file_entity, lines)
+        definitions = _add_java_regex_definitions(extraction, project_file, file_entity, lines)
+        _add_java_regex_calls(extraction, project_file, definitions, lines)
+    return extraction
+
+
+def _add_java_regex_imports(
+    extraction: AdapterExtraction,
+    project_file: ProjectFile,
+    file_entity: ProjectEntity,
+    lines: list[str],
+) -> None:
+    for line_number, line in enumerate(lines, start=1):
+        match = re.match(r"\s*import\s+([A-Za-z_][\w.]*)(?:\.\*)?\s*;", line)
+        if not match:
+            continue
+        name = match.group(1)
+        dependency_root = _dependency_root(name)
+        evidence_id = _stable_id("ev", project_file.path, "regex-import", name, str(line_number))
+        import_entity = ProjectEntity(
+            id=_stable_id("import", project_file.language, name),
+            type="Import",
+            name=name,
+            source_path=project_file.path,
+            properties={"language": project_file.language, "parser": "regex_fallback"},
+            evidence_ids=[evidence_id],
+        )
+        dependency_entity = ProjectEntity(
+            id=_stable_id("dependency", dependency_root),
+            type="Dependency",
+            name=dependency_root,
+            source_path=project_file.path,
+            properties={"language": project_file.language, "import": name, "parser": "regex_fallback"},
+            evidence_ids=[evidence_id],
+        )
+        extraction.entities.extend([import_entity, dependency_entity])
+        extraction.relations.extend(
+            [
+                ProjectRelation(
+                    id=_stable_id("rel", file_entity.id, import_entity.id, "IMPORTS", str(line_number)),
+                    source_id=file_entity.id,
+                    target_id=import_entity.id,
+                    type="IMPORTS",
+                    evidence_ids=[evidence_id],
+                ),
+                ProjectRelation(
+                    id=_stable_id("rel", file_entity.id, dependency_entity.id, "DEPENDS_ON", str(line_number)),
+                    source_id=file_entity.id,
+                    target_id=dependency_entity.id,
+                    type="DEPENDS_ON",
+                    evidence_ids=[evidence_id],
+                ),
+            ]
+        )
+        extraction.evidence_cards.append(
+            _regex_evidence(project_file, evidence_id, f"Import: {name}", line_number, line, [file_entity.id, import_entity.id, dependency_entity.id])
+        )
+
+
+def _add_java_regex_definitions(
+    extraction: AdapterExtraction,
+    project_file: ProjectFile,
+    file_entity: ProjectEntity,
+    lines: list[str],
+) -> list[tuple[str, str, int]]:
+    definitions: list[tuple[str, str, int]] = []
+    pattern = re.compile(
+        r"\b(?:(public|private|protected|abstract|final|static)\s+)*"
+        r"(class|interface|enum)\s+([A-Za-z_][A-Za-z0-9_]*)"
+    )
+    for line_number, line in enumerate(lines, start=1):
+        match = pattern.search(line)
+        if not match:
+            continue
+        kind = match.group(2)
+        name = match.group(3)
+        entity_type = {"class": "Class", "interface": "Interface", "enum": "Enum"}[kind]
+        evidence_id = _stable_id("ev", project_file.path, "regex-definition", entity_type, name, str(line_number))
+        entity_id = _stable_id(entity_type.lower(), project_file.path, name, str(line_number))
+        entity = ProjectEntity(
+            id=entity_id,
+            type=entity_type,
+            name=name,
+            source_path=project_file.path,
+            properties={
+                "language": project_file.language,
+                "line_start": line_number,
+                "line_end": line_number,
+                "parser": "regex_fallback",
+            },
+            evidence_ids=[evidence_id],
+        )
+        extraction.entities.append(entity)
+        extraction.relations.append(
+            ProjectRelation(
+                id=_stable_id("rel", file_entity.id, entity.id, "DEFINES", str(line_number)),
+                source_id=file_entity.id,
+                target_id=entity.id,
+                type="DEFINES",
+                evidence_ids=[evidence_id],
+            )
+        )
+        extraction.evidence_cards.append(
+            _regex_evidence(project_file, evidence_id, f"{entity_type}: {name}", line_number, line, [file_entity.id, entity.id])
+        )
+        definitions.append((entity_id, name, line_number))
+    return definitions
+
+
+def _add_java_regex_calls(
+    extraction: AdapterExtraction,
+    project_file: ProjectFile,
+    definitions: list[tuple[str, str, int]],
+    lines: list[str],
+) -> None:
+    if not definitions:
+        return
+    caller_id = definitions[0][0]
+    caller_names = {name for _, name, _ in definitions}
+    for line_number, line in enumerate(lines, start=1):
+        for call_name in re.findall(r"\.([A-Za-z_][A-Za-z0-9_]*)\s*\(", line):
+            if call_name in caller_names:
+                continue
+            evidence_id = _stable_id("ev", project_file.path, "regex-call", call_name, str(line_number))
+            call_id = _stable_id("call", project_file.path, call_name, str(line_number))
+            call_entity = ProjectEntity(
+                id=call_id,
+                type="Call",
+                name=call_name,
+                source_path=project_file.path,
+                properties={"language": project_file.language, "line_start": line_number, "parser": "regex_fallback"},
+                evidence_ids=[evidence_id],
+            )
+            extraction.entities.append(call_entity)
+            extraction.relations.append(
+                ProjectRelation(
+                    id=_stable_id("rel", caller_id, call_id, "CALLS", str(line_number)),
+                    source_id=caller_id,
+                    target_id=call_id,
+                    type="CALLS",
+                    evidence_ids=[evidence_id],
+                )
+            )
+            extraction.evidence_cards.append(
+                _regex_evidence(project_file, evidence_id, f"Call: {call_name}", line_number, line, [caller_id, call_id])
+            )
+
+
+def _regex_evidence(
+    project_file: ProjectFile,
+    evidence_id: str,
+    title: str,
+    line_number: int,
+    line: str,
+    linked_entities: list[str],
+) -> EvidenceCard:
+    return EvidenceCard(
+        id=evidence_id,
+        source_type="code",
+        source_path=project_file.path,
+        title=title,
+        snippet=line.strip()[:1200],
+        line_start=line_number,
+        line_end=line_number,
+        linked_entities=linked_entities,
+        metadata={"parser": "regex_fallback"},
+    )
 
 
 def _walk(node: Node) -> Iterable[Node]:

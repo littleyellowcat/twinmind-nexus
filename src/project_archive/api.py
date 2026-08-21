@@ -11,7 +11,7 @@ from collections import Counter
 from dataclasses import asdict, dataclass, field
 from pathlib import Path, PurePosixPath
 from tempfile import TemporaryDirectory
-from typing import Annotated
+from typing import Annotated, Any
 from zipfile import BadZipFile, ZipFile
 
 from fastapi import (
@@ -176,6 +176,15 @@ class AgentEvalRunRequest(BaseModel):
     agent_llm_mode: str = Field(default="fast", max_length=20)
 
 
+class HarnessPolicyCheckRequest(BaseModel):
+    action: str = Field(default="read_only", min_length=1, max_length=80)
+    resource: str = Field(default="archive", max_length=240)
+
+
+class HarnessCommandDryRunRequest(BaseModel):
+    parameters: dict[str, Any] = Field(default_factory=dict)
+
+
 @dataclass
 class ArchiveJob:
     id: str
@@ -236,6 +245,46 @@ def create_app() -> FastAPI:
     @app.get("/api/graph-store/status")
     def graph_store_status(service: ServiceDep) -> dict[str, str | bool | None]:
         return service.graph_store_status()
+
+    @app.get("/api/harness/capabilities")
+    def harness_capabilities(service: ServiceDep) -> dict:
+        return service.harness_capabilities()
+
+    @app.get("/api/harness/policy")
+    def harness_policy(service: ServiceDep) -> dict:
+        return service.harness_policy()
+
+    @app.get("/api/harness/agent-profiles")
+    def harness_agent_profiles(service: ServiceDep) -> dict:
+        return service.harness_agent_profiles()
+
+    @app.get("/api/harness/commands")
+    def harness_commands(service: ServiceDep) -> dict:
+        return service.harness_commands()
+
+    @app.post("/api/harness/commands/{command_id}/dry-run")
+    def harness_command_dry_run(
+        command_id: str,
+        request: HarnessCommandDryRunRequest,
+        service: ServiceDep,
+    ) -> dict:
+        try:
+            return service.harness_command_dry_run(
+                command_id,
+                parameters=request.parameters,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/api/harness/policy-check")
+    def harness_policy_check(
+        request: HarnessPolicyCheckRequest,
+        service: ServiceDep,
+    ) -> dict:
+        return service.harness_policy_check(
+            action=request.action,
+            resource=request.resource,
+        )
 
     @app.get("/api/system/config-check")
     def system_config_check(service: ServiceDep) -> dict:
@@ -482,6 +531,64 @@ def create_app() -> FastAPI:
     def get_ingestion_diagnostics(project_id: str, service: ServiceDep) -> dict:
         try:
             return service.ingestion_diagnostics(project_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get("/api/archives/{project_id}/harness/events")
+    def get_harness_events(
+        project_id: str,
+        service: ServiceDep,
+        event_type: str | None = None,
+        limit: int = 200,
+    ) -> dict:
+        try:
+            return service.list_harness_events(
+                project_id,
+                event_type=event_type,
+                limit=limit,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get("/api/archives/{project_id}/harness/summary")
+    def get_harness_summary(project_id: str, service: ServiceDep) -> dict:
+        try:
+            return service.harness_run_summary(project_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get("/api/archives/{project_id}/harness/timeline")
+    def get_harness_timeline(project_id: str, service: ServiceDep) -> dict:
+        try:
+            return service.harness_timeline(project_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get("/api/archives/{project_id}/harness/export")
+    def get_harness_export(project_id: str, service: ServiceDep) -> dict:
+        try:
+            return service.harness_export(project_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get("/api/archives/{project_id}/harness/artifacts")
+    def get_harness_artifact_manifest(project_id: str, service: ServiceDep) -> dict:
+        try:
+            return service.harness_artifact_manifest(project_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get("/api/archives/{project_id}/harness/artifacts/validation")
+    def get_harness_artifact_validation(project_id: str, service: ServiceDep) -> dict:
+        try:
+            return service.harness_artifact_validation(project_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/api/archives/{project_id}/harness/artifacts/cleanup-dry-run")
+    def harness_artifact_cleanup_dry_run(project_id: str, service: ServiceDep) -> dict:
+        try:
+            return service.harness_artifact_cleanup_dry_run(project_id)
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -779,6 +886,13 @@ def create_app() -> FastAPI:
                 "mission_id": mission_id,
                 "trace_events": [event.to_dict() for event in trace_events],
             }
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get("/api/agent-missions/{mission_id}/trace-artifact")
+    def get_agent_mission_trace_artifact(mission_id: str, service: ServiceDep) -> dict:
+        try:
+            return service.agent_mission_trace_artifact(mission_id)
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 

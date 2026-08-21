@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import time
 import urllib.error
 import urllib.request
@@ -33,12 +34,30 @@ from src.project_archive.graph_explorer import (
     search_graph_entities,
 )
 from src.project_archive.graph_store import create_graph_store
+from src.project_archive.agent_profiles import load_agent_profiles
+from src.project_archive.harness_artifact_retention import (
+    build_artifact_manifest,
+    cleanup_artifacts,
+    validate_artifacts,
+)
+from src.project_archive.harness_artifacts import HarnessArtifactStore
+from src.project_archive.harness_commands import list_harness_commands, run_harness_command
+from src.project_archive.harness_events import HarnessEventStore
+from src.project_archive.harness_export import build_harness_export
+from src.project_archive.harness_governance import (
+    build_harness_policy_check,
+    evaluate_harness_operation,
+    harness_capability_matrix,
+)
+from src.project_archive.harness_policy import load_default_policy_rules
+from src.project_archive.harness_summary import build_harness_summary
 from src.project_archive.hybrid_rag import (
     ProjectHybridRAGIndex,
     retrieval_results_to_evidence_cards,
 )
 from src.project_archive.llm import create_archive_llm_enhancer_from_config
 from src.project_archive.multi_agent import MultiAgentPipeline
+from src.project_archive.provider_runtime import provider_failure_payload, sanitize_provider_error
 from src.project_archive.scanner import SCAN_PROFILE_ARCHITECTURE
 from src.core.settings import DEFAULT_SETTINGS_PATH, load_settings
 from src.project_archive.types import (
@@ -70,6 +89,125 @@ from src.project_archive.types import (
 
 MISSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 TERMINAL_AGENT_MISSION_STATUSES = TERMINAL_MISSION_STATUSES
+_FALLBACK_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
+_FALLBACK_MAX_IMAGE_BYTES = 6 * 1024 * 1024
+_FALLBACK_MAX_IMAGES_PER_PROJECT = 16
+
+
+def _repo_config_path(name: str) -> Path:
+    return Path(__file__).resolve().parents[2] / "config" / name
+
+
+def _sanitize_harness_event_data(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(key): _sanitize_harness_event_data(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_sanitize_harness_event_data(item) for item in value]
+    if isinstance(value, str):
+        return sanitize_provider_error(value)
+    return value
+
+
+def _project_rule_sources_for_draft(draft: ProjectArchiveDraft) -> list[dict[str, object]]:
+    sources = [
+        dict(item)
+        for item in draft.metadata.get("project_rule_sources", [])
+        if isinstance(item, dict)
+    ]
+    if sources:
+        return sources
+    inferred: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for card in draft.evidence_cards:
+        path = card.source_path.strip("/")
+        name = Path(path).name.lower()
+        if name not in {"agents.md", "llms.txt"} or path in seen:
+            continue
+        seen.add(path)
+        inferred.append(
+            {
+                "path": path,
+                "rule_kind": "agents" if name == "agents.md" else "llms",
+                "evidence_priority": "high",
+            }
+        )
+    return sorted(inferred, key=lambda item: str(item.get("path", "")))
+
+
+def _build_fallback_image_evidence(
+    *,
+    storage_dir: Path,
+    project_root: Path | str,
+    project_id: str,
+) -> list[EvidenceCard]:
+    root = Path(project_root)
+    if not root.exists():
+        return []
+    images = [
+        path
+        for path in root.rglob("*")
+        if path.is_file()
+        and path.suffix.lower() in _FALLBACK_IMAGE_SUFFIXES
+        and path.stat().st_size <= _FALLBACK_MAX_IMAGE_BYTES
+        and ".twinmind" not in path.relative_to(root).parts
+    ][:_FALLBACK_MAX_IMAGES_PER_PROJECT]
+    cards: list[EvidenceCard] = []
+    asset_dir = storage_dir / project_id / "assets" / "images"
+    asset_dir.mkdir(parents=True, exist_ok=True)
+    for index, image_path in enumerate(images):
+        relative_path = image_path.relative_to(root).as_posix()
+        digest = hashlib.sha1(relative_path.encode("utf-8")).hexdigest()[:16]
+        asset_id = f"{digest}{image_path.suffix.lower()}"
+        asset_path = asset_dir / asset_id
+        if not asset_path.exists():
+            shutil.copy2(image_path, asset_path)
+        cards.append(
+            EvidenceCard(
+                id=f"image:{project_id}:fallback:{index}:{digest[:10]}",
+                source_type="image",
+                source_path=relative_path,
+                title=f"Image: {Path(relative_path).name}",
+                snippet=f"Image asset preserved for archive evidence: {relative_path}",
+                confidence=0.32,
+                metadata={
+                    "modality": "image",
+                    "vision_provider": "fallback",
+                    "vision_enabled": False,
+                    "vision_error": "Hybrid RAG image indexing unavailable; deterministic image evidence fallback used.",
+                    "file_size": image_path.stat().st_size,
+                    "asset_id": asset_id,
+                    "asset_path": f"assets/images/{asset_id}",
+                    "mime_type": _fallback_image_mime_type(image_path),
+                },
+            )
+        )
+    return cards
+
+
+def _merge_evidence_cards(
+    existing: list[EvidenceCard],
+    extra: list[EvidenceCard],
+) -> list[EvidenceCard]:
+    seen = {card.id for card in existing}
+    merged = list(existing)
+    for card in extra:
+        if card.id not in seen:
+            seen.add(card.id)
+            merged.append(card)
+    return merged
+
+
+def _fallback_image_mime_type(path: Path) -> str:
+    suffix = path.suffix.lower()
+    if suffix in {".jpg", ".jpeg"}:
+        return "image/jpeg"
+    if suffix == ".webp":
+        return "image/webp"
+    if suffix == ".gif":
+        return "image/gif"
+    if suffix == ".bmp":
+        return "image/bmp"
+    return "image/png"
 
 
 class ProjectArchiveService:
@@ -94,6 +232,7 @@ class ProjectArchiveService:
         on_stage: Callable[[str, int, str], None] | None = None,
     ) -> ProjectArchiveDraft:
         stage_timings: list[dict[str, Any]] = []
+        run_id = f"ingestion:{datetime.now(UTC).strftime('%Y%m%d%H%M%S%f')}"
 
         def mark_stage(name: str, started_at: float, status: str = "complete", error: str | None = None) -> None:
             item: dict[str, Any] = {
@@ -165,8 +304,14 @@ class ProjectArchiveService:
                 )
         except Exception as exc:
             mark_stage("hybrid_rag_vision", rag_started_at, status="failed", error=str(exc))
+            fallback_image_cards = _build_fallback_image_evidence(
+                storage_dir=self.storage_dir,
+                project_root=project_root,
+                project_id=draft.project_id,
+            )
             draft = replace(
                 draft,
+                evidence_cards=_merge_evidence_cards(draft.evidence_cards, fallback_image_cards),
                 confirmation_items=[
                     *draft.confirmation_items,
                     f"Hybrid RAG indexing failed: {exc}",
@@ -199,6 +344,21 @@ class ProjectArchiveService:
             },
             artifact_path=str(self._draft_path(project_id)),
         )
+        self._append_harness_event(
+            project_id=project_id,
+            run_id=run_id,
+            event_type="ingestion.completed",
+            data={
+                "kind": "archive_ingestion",
+                "scan_profile": scan_profile,
+                "duration_seconds": round(time.perf_counter() - total_started_at, 3),
+                "metrics": {
+                    "entities": len(draft.entities),
+                    "relations": len(draft.relations),
+                    "evidence": len(draft.evidence_cards),
+                },
+            },
+        )
         agent_report_path = self._agent_report_path(project_id)
         if agent_report_path.exists():
             agent_report_path.unlink()
@@ -210,12 +370,30 @@ class ProjectArchiveService:
         scan_profile: str = SCAN_PROFILE_ARCHITECTURE,
         llm_mode: str = "deep",
     ) -> ProjectAgentReport:
+        started_at = time.perf_counter()
+        run_id = f"agent-report:{datetime.now(UTC).strftime('%Y%m%d%H%M%S%f')}"
         draft = self.load_draft(project_id)
         normalized_mode = "fast" if llm_mode == "fast" else "deep"
-        report = MultiAgentPipeline.from_config(normalized_mode).run(
-            draft=draft,
-            scan_profile=scan_profile,
-        )
+        try:
+            report = MultiAgentPipeline.from_config(normalized_mode).run(
+                draft=draft,
+                scan_profile=scan_profile,
+            )
+        except Exception as exc:
+            status = self.agent_status()
+            self._append_harness_event(
+                project_id=project_id,
+                run_id=run_id,
+                event_type="provider.failed",
+                data=provider_failure_payload(
+                    provider=str(status.get("provider") or "rules"),
+                    model=status.get("model"),
+                    error=exc,
+                    fallback="rules",
+                    operation="agent_report",
+                ),
+            )
+            raise
         report = replace(
             report,
             metrics={
@@ -233,6 +411,17 @@ class ProjectArchiveService:
             status=report.status,
             metrics=report.metrics,
             artifact_path=str(self._agent_report_path(project_id)),
+        )
+        self._append_harness_event(
+            project_id=project_id,
+            run_id=run_id,
+            event_type="agent_report.completed",
+            data={
+                "kind": "agent_report",
+                "status": report.status,
+                "duration_seconds": round(time.perf_counter() - started_at, 3),
+                "metrics": report.metrics,
+            },
         )
         return report
 
@@ -284,6 +473,12 @@ class ProjectArchiveService:
                     "Prefer these retrieved chunks when they directly answer the question."
                 )
             rag_metadata = rag_result.to_metadata()
+        elif rag_metadata is None:
+            rag_metadata = {
+                "enabled": False,
+                "error": "Hybrid RAG index is unavailable for this project.",
+                "result_count": 0,
+            }
 
         workflow = AgentWorkflow(
             entities=entities,
@@ -303,13 +498,31 @@ class ProjectArchiveService:
                 result.evidence_card_ids,
             ),
         }
-        return replace(
+        final_result = replace(
             result,
             metadata={
                 **result_metadata,
                 **({"hybrid_rag": rag_metadata} if rag_metadata is not None else {}),
             },
         )
+        self._append_harness_event(
+            project_id=project_id,
+            run_id=f"query:{datetime.now(UTC).strftime('%Y%m%d%H%M%S%f')}",
+            event_type="query.completed",
+            data={
+                "kind": "archive_query",
+                "mode": mode.value if hasattr(mode, "value") else str(mode),
+                "hall_id": hall_id,
+                "evidence_card_ids": len(final_result.evidence_card_ids),
+                "confidence": final_result.confidence,
+                "hybrid_rag_result_count": (
+                    rag_metadata.get("result_count")
+                    if isinstance(rag_metadata, dict)
+                    else None
+                ),
+            },
+        )
+        return final_result
 
     def agent_status(self) -> dict[str, str | bool | None]:
         enhancer = create_archive_llm_enhancer_from_config()
@@ -408,6 +621,138 @@ class ProjectArchiveService:
             for child in self.storage_dir.iterdir()
             if child.is_dir() and (child / "draft_archive.json").exists()
         )
+
+    def list_harness_events(
+        self,
+        project_id: str,
+        *,
+        event_type: str | None = None,
+        limit: int = 200,
+    ) -> dict[str, Any]:
+        self.load_draft(project_id)
+        events = HarnessEventStore(self.storage_dir).list_events(
+            project_id,
+            event_type=event_type,
+            limit=limit,
+        )
+        return {
+            "project_id": project_id,
+            "events": [event.to_dict() for event in events],
+            "metrics": {
+                "events": len(events),
+                "latest_sequence": events[-1].sequence if events else 0,
+            },
+        }
+
+    def harness_capabilities(self) -> dict[str, Any]:
+        return harness_capability_matrix()
+
+    def harness_policy(self) -> dict[str, Any]:
+        rules = load_default_policy_rules(_repo_config_path("harness_policy.json"))
+        return {
+            "rules": [
+                {
+                    "id": rule.id,
+                    "effect": rule.effect,
+                    "reason": rule.reason,
+                    "role": rule.role,
+                    "action": rule.action,
+                    "tool": rule.tool,
+                    "resource": rule.resource,
+                    "priority": rule.priority,
+                }
+                for rule in rules
+            ],
+            "forbidden_coding_agent_tools": harness_capability_matrix()["governance"][
+                "forbidden_coding_agent_tools"
+            ],
+        }
+
+    def harness_agent_profiles(self) -> dict[str, Any]:
+        profiles = load_agent_profiles(_repo_config_path("agent_profiles.json"))
+        return {
+            "roles": [profile.to_dict() for profile in profiles],
+            "metrics": {"roles": len(profiles)},
+        }
+
+    def harness_commands(self) -> dict[str, Any]:
+        commands = list_harness_commands()
+        return {
+            "commands": commands,
+            "metrics": {"commands": len(commands)},
+        }
+
+    def harness_command_dry_run(
+        self,
+        command_id: str,
+        *,
+        parameters: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return run_harness_command(command_id, parameters or {}, dry_run=True)
+
+    def harness_policy_check(self, *, action: str, resource: str) -> dict[str, Any]:
+        return build_harness_policy_check(
+            action=action,
+            resource=resource,
+            provider_status=self.agent_status(),
+        )
+
+    def harness_run_summary(self, project_id: str) -> dict[str, Any]:
+        self.load_draft(project_id)
+        events = [
+            event.to_dict()
+            for event in HarnessEventStore(self.storage_dir).list_events(
+                project_id,
+                limit=500,
+            )
+        ]
+        try:
+            agent_eval_report = self.load_agent_eval_report(project_id)
+        except ValueError:
+            agent_eval_report = None
+        try:
+            version_events = self.list_version_history(project_id)["events"]
+        except ValueError:
+            version_events = []
+        return build_harness_summary(
+            project_id=project_id,
+            events=events,
+            agent_eval_report=agent_eval_report,
+            version_events=version_events,
+            mission_records=[
+                mission.to_dict()
+                for mission in self._agent_mission_records(project_id)
+            ],
+        )
+
+    def harness_timeline(self, project_id: str) -> dict[str, Any]:
+        self.load_draft(project_id)
+        exported = build_harness_export(self.storage_dir, project_id)
+        timeline = list(exported["timeline"])
+        return {
+            "project_id": project_id,
+            "timeline": timeline,
+            "metrics": {
+                "events": len(timeline),
+                "latest_sequence": exported["metrics"]["latest_sequence"],
+            },
+        }
+
+    def harness_export(self, project_id: str) -> dict[str, Any]:
+        self.load_draft(project_id)
+        return build_harness_export(self.storage_dir, project_id)
+
+    def harness_artifact_manifest(self, project_id: str) -> dict[str, Any]:
+        self.load_draft(project_id)
+        return build_artifact_manifest(self.storage_dir, project_id)
+
+    def harness_artifact_validation(self, project_id: str) -> dict[str, Any]:
+        self.load_draft(project_id)
+        return validate_artifacts(self.storage_dir, project_id)
+
+    def harness_artifact_cleanup_dry_run(self, project_id: str) -> dict[str, Any]:
+        self.load_draft(project_id)
+        return cleanup_artifacts(self.storage_dir, project_id, dry_run=True)
 
     def build_knowledge_universe(
         self,
@@ -722,6 +1067,8 @@ class ProjectArchiveService:
         )
 
     def generate_project_intelligence_report(self, project_id: str) -> dict[str, Any]:
+        started_at = time.perf_counter()
+        run_id = f"intelligence-report:{datetime.now(UTC).strftime('%Y%m%d%H%M%S%f')}"
         draft = self.load_draft(project_id)
         entity_by_id = {entity.id: entity for entity in draft.entities}
         evidence_by_id = {card.id: card for card in draft.evidence_cards}
@@ -845,6 +1192,16 @@ class ProjectArchiveService:
             status="complete",
             metrics=report.get("coverage", {}),
             artifact_path=str(self._intelligence_report_path(project_id)),
+        )
+        self._append_harness_event(
+            project_id=project_id,
+            run_id=run_id,
+            event_type="report.completed",
+            data={
+                "kind": "intelligence_report",
+                "duration_seconds": round(time.perf_counter() - started_at, 3),
+                "metrics": report.get("coverage", {}),
+            },
         )
         return report
 
@@ -1314,6 +1671,8 @@ class ProjectArchiveService:
         project_id: str,
         on_progress: Callable[[int, str], None] | None = None,
     ) -> dict:
+        started_at = time.perf_counter()
+        run_id = f"rag-rebuild:{datetime.now(UTC).strftime('%Y%m%d%H%M%S%f')}"
         draft = self.load_draft(project_id)
         result = ProjectHybridRAGIndex(self.storage_dir).rebuild_from_draft(
             draft,
@@ -1328,6 +1687,19 @@ class ProjectArchiveService:
                 "candidate_chunks": result.candidate_chunks,
             },
             artifact_path=str(self._project_dir(project_id) / "hybrid_rag_status.json"),
+        )
+        self._append_harness_event(
+            project_id=project_id,
+            run_id=run_id,
+            event_type="rag.rebuild.completed",
+            data={
+                "kind": "hybrid_rag_rebuild",
+                "duration_seconds": round(time.perf_counter() - started_at, 3),
+                "metrics": {
+                    "indexed_chunks": result.indexed_chunks,
+                    "candidate_chunks": result.candidate_chunks,
+                },
+            },
         )
         return self.hybrid_rag_status(project_id)
 
@@ -1786,6 +2158,8 @@ class ProjectArchiveService:
         *,
         limit: int = 8,
     ) -> ArchiveEvaluationReport:
+        started_at = time.perf_counter()
+        run_id = f"evaluation:{datetime.now(UTC).strftime('%Y%m%d%H%M%S%f')}"
         draft = self.load_draft(project_id)
         questions = self.generate_golden_questions(project_id, limit=limit)
         entity_lookup = {entity.id: entity for entity in draft.entities}
@@ -1999,6 +2373,16 @@ class ProjectArchiveService:
             metrics=report.aggregate_metrics,
             artifact_path=str(path),
         )
+        self._append_harness_event(
+            project_id=project_id,
+            run_id=run_id,
+            event_type="evaluation.completed",
+            data={
+                "kind": "evaluation",
+                "duration_seconds": round(time.perf_counter() - started_at, 3),
+                "metrics": report.aggregate_metrics,
+            },
+        )
         return report
 
     def run_agent_eval_harness(
@@ -2012,117 +2396,189 @@ class ProjectArchiveService:
     ) -> dict[str, Any]:
         draft = self.load_draft(project_id)
         started_at = time.perf_counter()
-        previous_report = self._latest_agent_eval_history(project_id)
-
-        agent_report: ProjectAgentReport | None = None
-        agent_error = ""
-        try:
-            agent_report = (
-                self.run_agent_report(project_id, llm_mode=agent_llm_mode)
-                if run_agent_report
-                else self.load_agent_report(project_id)
-            )
-        except ValueError as exc:
-            agent_error = str(exc)
-
-        evaluation: ArchiveEvaluationReport | None = None
-        evaluation_error = ""
-        try:
-            evaluation = (
-                self.run_archive_evaluation(project_id, limit=evaluation_limit)
-                if run_evaluation
-                else self.load_evaluation_report(project_id)
-            )
-        except ValueError as exc:
-            evaluation_error = str(exc)
-
-        try:
-            trust_report = self.agent_trust_report(project_id)
-        except ValueError:
-            trust_report = _empty_agent_trust_report(project_id)
-
-        try:
-            rag_status = self.hybrid_rag_status(project_id)
-        except ValueError as exc:
-            rag_status = {"error": str(exc), "indexed_chunks": 0, "health": "missing"}
-
-        try:
-            multimodal = self.multimodal_insights(project_id)
-        except ValueError:
-            multimodal = {"project_id": project_id, "image_count": 0, "quality_score": 0.0}
-
-        missions = self._agent_mission_records(project_id)
-        metrics = _agent_eval_metrics(
-            draft=draft,
-            agent_report=agent_report,
-            agent_error=agent_error,
-            evaluation=evaluation,
-            evaluation_error=evaluation_error,
-            trust_report=trust_report,
-            rag_status=rag_status,
-            multimodal=multimodal,
-            missions=missions,
-        )
-        gates = _agent_eval_gates(metrics)
-        regression = _agent_eval_regression(metrics, previous_report)
-        recommendations = _agent_eval_recommendations(
-            metrics=metrics,
-            gates=gates,
-            regression=regression,
-            agent_error=agent_error,
-            evaluation_error=evaluation_error,
-        )
-        report = {
-            "id": f"agent-eval:{datetime.now(UTC).strftime('%Y%m%d%H%M%S%f')}",
-            "project_id": project_id,
-            "created_at": datetime.now(UTC).isoformat(),
-            "status": _agent_eval_overall_status(gates, regression),
-            "duration_seconds": round(time.perf_counter() - started_at, 3),
-            "metrics": metrics,
-            "quality_gates": gates,
-            "regression": regression,
-            "recommendations": recommendations,
-            "artifacts": {
-                "agent_report": str(self._agent_report_path(project_id)) if agent_report else "",
-                "evaluation_report": str(self._evaluation_report_path(project_id)) if evaluation else "",
-                "memory": str(self._agent_memory_path(project_id)),
-            },
-            "metadata": {
-                "method": "deterministic_agent_eval_harness_v1",
+        run_id = f"agent-eval:{datetime.now(UTC).strftime('%Y%m%d%H%M%S%f')}"
+        events = HarnessEventStore(self.storage_dir)
+        artifacts = HarnessArtifactStore(self.storage_dir)
+        events.append(
+            project_id=project_id,
+            run_id=run_id,
+            event_type="run.started",
+            data={
+                "kind": "agent_eval_harness",
                 "run_evaluation": run_evaluation,
-                "evaluation_limit": evaluation_limit,
                 "run_agent_report": run_agent_report,
                 "agent_llm_mode": agent_llm_mode,
-                "agent_error": agent_error,
-                "evaluation_error": evaluation_error,
             },
-        }
-        memory = self._update_agent_memory(
-            project_id=project_id,
-            draft=draft,
-            report=report,
-            agent_report=agent_report,
-            evaluation=evaluation,
-            trust_report=trust_report,
-            rag_status=rag_status,
-            missions=missions,
         )
-        report["memory_update"] = {
-            "fact_count": len(memory.get("facts", [])),
-            "risk_count": len(memory.get("risks", [])),
-            "run_count": len(memory.get("harness_runs", [])),
-            "updated_at": memory.get("updated_at", ""),
-        }
-        self._write_agent_eval_report(project_id, report)
-        self._append_agent_eval_history(project_id, report)
-        self._append_version_event(
-            project_id,
-            kind="agent_eval_harness",
-            status=report["status"],
-            metrics=metrics,
-            artifact_path=str(self._agent_eval_report_path(project_id)),
-        )
-        return report
+        governance_decisions = [
+            evaluate_harness_operation("read_only", f"archive:{project_id}").to_dict(),
+            evaluate_harness_operation("local_artifact_write", f"archive:{project_id}").to_dict(),
+        ]
+        if run_agent_report and agent_llm_mode != "fast":
+            governance_decisions.append(
+                evaluate_harness_operation("live_model_call", f"agent_report:{project_id}").to_dict()
+            )
+        for decision in governance_decisions:
+            events.append(
+                project_id=project_id,
+                run_id=run_id,
+                event_type="governance.evaluated",
+                data=decision,
+            )
+        previous_report = self._latest_agent_eval_history(project_id)
+        try:
+            agent_report: ProjectAgentReport | None = None
+            agent_error = ""
+            try:
+                agent_report = (
+                    self.run_agent_report(project_id, llm_mode=agent_llm_mode)
+                    if run_agent_report
+                    else self.load_agent_report(project_id)
+                )
+            except ValueError as exc:
+                agent_error = str(exc)
+
+            evaluation: ArchiveEvaluationReport | None = None
+            evaluation_error = ""
+            try:
+                evaluation = (
+                    self.run_archive_evaluation(project_id, limit=evaluation_limit)
+                    if run_evaluation
+                    else self.load_evaluation_report(project_id)
+                )
+            except ValueError as exc:
+                evaluation_error = str(exc)
+
+            try:
+                trust_report = self.agent_trust_report(project_id)
+            except ValueError:
+                trust_report = _empty_agent_trust_report(project_id)
+
+            try:
+                rag_status = self.hybrid_rag_status(project_id)
+            except ValueError as exc:
+                rag_status = {"error": str(exc), "indexed_chunks": 0, "health": "missing"}
+
+            try:
+                multimodal = self.multimodal_insights(project_id)
+            except ValueError:
+                multimodal = {"project_id": project_id, "image_count": 0, "quality_score": 0.0}
+
+            missions = self._agent_mission_records(project_id)
+            metrics = _agent_eval_metrics(
+                draft=draft,
+                agent_report=agent_report,
+                agent_error=agent_error,
+                evaluation=evaluation,
+                evaluation_error=evaluation_error,
+                trust_report=trust_report,
+                rag_status=rag_status,
+                multimodal=multimodal,
+                missions=missions,
+            )
+            gates = _agent_eval_gates(metrics)
+            regression = _agent_eval_regression(metrics, previous_report)
+            recommendations = _agent_eval_recommendations(
+                metrics=metrics,
+                gates=gates,
+                regression=regression,
+                agent_error=agent_error,
+                evaluation_error=evaluation_error,
+            )
+            report = {
+                "id": run_id,
+                "project_id": project_id,
+                "created_at": datetime.now(UTC).isoformat(),
+                "status": _agent_eval_overall_status(gates, regression),
+                "duration_seconds": round(time.perf_counter() - started_at, 3),
+                "metrics": metrics,
+                "quality_gates": gates,
+                "regression": regression,
+                "recommendations": recommendations,
+                "artifacts": {
+                    "agent_report": str(self._agent_report_path(project_id)) if agent_report else "",
+                    "evaluation_report": str(self._evaluation_report_path(project_id)) if evaluation else "",
+                    "memory": str(self._agent_memory_path(project_id)),
+                },
+                "metadata": {
+                    "method": "deterministic_agent_eval_harness_v1",
+                    "run_evaluation": run_evaluation,
+                    "evaluation_limit": evaluation_limit,
+                    "run_agent_report": run_agent_report,
+                    "agent_llm_mode": agent_llm_mode,
+                    "agent_error": agent_error,
+                    "evaluation_error": evaluation_error,
+                    "governance": governance_decisions,
+                    "project_rule_sources": _project_rule_sources_for_draft(draft),
+                },
+            }
+            memory = self._update_agent_memory(
+                project_id=project_id,
+                draft=draft,
+                report=report,
+                agent_report=agent_report,
+                evaluation=evaluation,
+                trust_report=trust_report,
+                rag_status=rag_status,
+                missions=missions,
+            )
+            report["memory_update"] = {
+                "fact_count": len(memory.get("facts", [])),
+                "risk_count": len(memory.get("risks", [])),
+                "run_count": len(memory.get("harness_runs", [])),
+                "updated_at": memory.get("updated_at", ""),
+            }
+            report_artifact = artifacts.persist_text(
+                project_id=project_id,
+                run_id=run_id,
+                kind="agent_eval_report",
+                content=json.dumps(report, ensure_ascii=False, indent=2),
+            )
+            report["artifacts"]["agent_eval_report"] = report_artifact.to_dict()
+            events.append(
+                project_id=project_id,
+                run_id=run_id,
+                event_type="artifact.persisted",
+                data={
+                    "kind": report_artifact.kind,
+                    "artifact_id": report_artifact.artifact_id,
+                    "sha256": report_artifact.sha256,
+                    "bytes": report_artifact.bytes,
+                    "path": report_artifact.path,
+                },
+            )
+            self._write_agent_eval_report(project_id, report)
+            self._append_agent_eval_history(project_id, report)
+            self._append_version_event(
+                project_id,
+                kind="agent_eval_harness",
+                status=report["status"],
+                metrics=metrics,
+                artifact_path=str(self._agent_eval_report_path(project_id)),
+            )
+            events.append(
+                project_id=project_id,
+                run_id=run_id,
+                event_type="run.completed",
+                data={
+                    "kind": "agent_eval_harness",
+                    "status": report["status"],
+                    "duration_seconds": report["duration_seconds"],
+                },
+            )
+            return report
+        except Exception as exc:
+            events.append(
+                project_id=project_id,
+                run_id=run_id,
+                event_type="run.failed",
+                data={
+                    "kind": "agent_eval_harness",
+                    "error": str(exc),
+                    "duration_seconds": round(time.perf_counter() - started_at, 3),
+                },
+            )
+            raise
 
     def load_agent_eval_report(self, project_id: str) -> dict[str, Any]:
         self.load_draft(project_id)
@@ -2319,7 +2775,48 @@ class ProjectArchiveService:
         mission = runtime.load(mission_id)
         if mission.status in TERMINAL_AGENT_MISSION_STATUSES:
             return mission
-        return runtime.run(mission_id)
+        started_at = time.perf_counter()
+        HarnessEventStore(self.storage_dir).append(
+            project_id=mission.project_id,
+            run_id=f"agent-mission:{mission.id}",
+            event_type="run.started",
+            data={
+                "kind": "agent_mission",
+                "mission_id": mission.id,
+                "goal": mission.goal,
+                "status": mission.status,
+            },
+        )
+        try:
+            completed = runtime.run(mission_id)
+        except Exception as exc:
+            HarnessEventStore(self.storage_dir).append(
+                project_id=mission.project_id,
+                run_id=f"agent-mission:{mission.id}",
+                event_type="run.failed",
+                data={
+                    "kind": "agent_mission",
+                    "mission_id": mission.id,
+                    "error": str(exc),
+                    "duration_seconds": round(time.perf_counter() - started_at, 3),
+                },
+            )
+            raise
+        if completed.status in TERMINAL_AGENT_MISSION_STATUSES:
+            HarnessEventStore(self.storage_dir).append(
+                project_id=completed.project_id,
+                run_id=f"agent-mission:{completed.id}",
+                event_type=_agent_mission_harness_event_type(completed.status),
+                data={
+                    "kind": "agent_mission",
+                    "mission_id": completed.id,
+                    "status": completed.status,
+                    "duration_seconds": round(time.perf_counter() - started_at, 3),
+                    "trace_events": len(completed.trace_events),
+                    "tasks": len(completed.tasks),
+                },
+            )
+        return completed
 
     def start_agent_mission(
         self,
@@ -2345,6 +2842,46 @@ class ProjectArchiveService:
         self._validate_mission_id(mission_id)
         return self._agent_mission_runtime().trace(mission_id)
 
+    def agent_mission_trace_artifact(self, mission_id: str) -> dict[str, Any]:
+        self._validate_mission_id(mission_id)
+        mission = self.load_agent_mission(mission_id)
+        trace_events = self.agent_mission_trace(mission_id)
+        run_id = f"agent-mission:{mission.id}"
+        artifact = HarnessArtifactStore(self.storage_dir).persist_text(
+            project_id=mission.project_id,
+            run_id=run_id,
+            kind="agent_mission_trace",
+            content=json.dumps(
+                {
+                    "mission_id": mission.id,
+                    "project_id": mission.project_id,
+                    "status": mission.status,
+                    "trace_events": [event.to_dict() for event in trace_events],
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+        )
+        HarnessEventStore(self.storage_dir).append(
+            project_id=mission.project_id,
+            run_id=run_id,
+            event_type="artifact.persisted",
+            data={
+                "kind": artifact.kind,
+                "artifact_id": artifact.artifact_id,
+                "sha256": artifact.sha256,
+                "bytes": artifact.bytes,
+                "path": artifact.path,
+                "mission_id": mission.id,
+            },
+        )
+        return {
+            "mission_id": mission.id,
+            "project_id": mission.project_id,
+            "trace_event_count": len(trace_events),
+            "artifact": artifact.to_dict(),
+        }
+
     def agent_mission_visualization(self, mission_id: str) -> dict[str, Any]:
         self._validate_mission_id(mission_id)
         mission = self.load_agent_mission(mission_id)
@@ -2352,7 +2889,21 @@ class ProjectArchiveService:
 
     def update_agent_mission_status(self, mission_id: str, status: str) -> AgentMission:
         self._validate_mission_id(mission_id)
-        return self._agent_mission_runtime().update_status(mission_id, status)
+        updated = self._agent_mission_runtime().update_status(mission_id, status)
+        if updated.status in TERMINAL_AGENT_MISSION_STATUSES:
+            HarnessEventStore(self.storage_dir).append(
+                project_id=updated.project_id,
+                run_id=f"agent-mission:{updated.id}",
+                event_type=_agent_mission_harness_event_type(updated.status),
+                data={
+                    "kind": "agent_mission",
+                    "mission_id": updated.id,
+                    "status": updated.status,
+                    "trace_events": len(updated.trace_events),
+                    "tasks": len(updated.tasks),
+                },
+            )
+        return updated
 
     def _agent_mission_records(self, project_id: str) -> list[AgentMission]:
         project_dir = self._project_dir(project_id)
@@ -2498,6 +3049,24 @@ class ProjectArchiveService:
             encoding="utf-8",
         )
         tmp_path.replace(path)
+
+    def _append_harness_event(
+        self,
+        *,
+        project_id: str,
+        run_id: str,
+        event_type: str,
+        data: dict[str, Any],
+    ) -> None:
+        try:
+            HarnessEventStore(self.storage_dir).append(
+                project_id=project_id,
+                run_id=run_id,
+                event_type=event_type,
+                data=_sanitize_harness_event_data(data),
+            )
+        except Exception:
+            return
 
     def _append_evaluation_history(self, report: ArchiveEvaluationReport) -> None:
         path = self._evaluation_history_path(report.project_id)
@@ -4524,7 +5093,7 @@ def _relation_confidence_record(
 ) -> dict[str, Any]:
     evidence_count = sum(1 for evidence_id in relation.evidence_ids if evidence_id in evidence_by_id)
     property_confidence = relation.properties.get("confidence")
-    if isinstance(property_confidence, int | float):
+    if isinstance(property_confidence, (int, float)):
         confidence = float(property_confidence)
     else:
         confidence = 0.35 + min(0.45, evidence_count * 0.15)
@@ -6522,6 +7091,14 @@ def _average_metric(
 ) -> float:
     values = [case.metrics.get(metric_name, 0.0) for case in case_results]
     return round(sum(values) / len(values), 4) if values else 0.0
+
+
+def _agent_mission_harness_event_type(status: str) -> str:
+    if status in {"failed"}:
+        return "run.failed"
+    if status in {"stopped", "cancelled"}:
+        return "run.cancelled"
+    return "run.completed"
 
 
 def _is_eval_entity_candidate(entity: Any) -> bool:

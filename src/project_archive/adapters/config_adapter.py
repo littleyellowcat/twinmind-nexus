@@ -7,8 +7,15 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
-import tomllib
 import yaml
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - compatibility for Python 3.10.
+    try:
+        import tomli as tomllib  # type: ignore[no-redef]
+    except ModuleNotFoundError:
+        tomllib = None  # type: ignore[assignment]
 
 from src.project_archive.adapters.base import AdapterExtraction, BaseLanguageAdapter
 from src.project_archive.types import EvidenceCard, ProjectEntity, ProjectFile, ProjectRelation
@@ -120,14 +127,33 @@ class ParseError:
 def _parse_config(project_file: ProjectFile) -> Any:
     try:
         if project_file.language == "toml":
+            if tomllib is None:
+                return _parse_simple_toml(project_file.text)
             return tomllib.loads(project_file.text)
         if project_file.language == "json":
             return json.loads(project_file.text)
         if project_file.language == "yaml":
             return yaml.safe_load(project_file.text)
-    except (json.JSONDecodeError, tomllib.TOMLDecodeError, yaml.YAMLError) as error:
+    except (json.JSONDecodeError, _toml_decode_error(), yaml.YAMLError) as error:
         return ParseError(message=str(error))
     return {}
+
+
+def _toml_decode_error() -> type[Exception]:
+    if tomllib is None:
+        return ValueError
+    return tomllib.TOMLDecodeError
+
+
+def _parse_simple_toml(text: str) -> dict[str, Any]:
+    parsed: dict[str, Any] = {}
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        parsed[key.strip()] = value.strip().strip('"').strip("'")
+    return parsed
 
 
 def _config_snippet(text: str, key: str) -> str:

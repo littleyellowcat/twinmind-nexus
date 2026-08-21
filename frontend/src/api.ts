@@ -22,6 +22,12 @@ import type {
   GraphSummary,
   GraphStoreStatus,
   GraphWorkspaceReport,
+  HarnessRunSummary,
+  HarnessArtifactManifest,
+  HarnessArtifactCleanup,
+  HarnessCommand,
+  HarnessCommandDryRun,
+  HarnessTimeline,
   HybridRagStatus,
   IngestionDiagnostics,
   MissionGraphOverlay,
@@ -407,6 +413,87 @@ export async function fetchAgentEvalReport(projectId: string): Promise<AgentEval
     throw new Error(`AgentEval report failed: ${await readErrorDetail(response)}`);
   }
   return (await response.json()) as AgentEvalReport;
+}
+
+export async function fetchHarnessRunSummary(projectId: string): Promise<HarnessRunSummary | null> {
+  const response = await fetch(`${API_BASE_URL}/api/archives/${encodeURIComponent(projectId)}/harness/summary`);
+  if (response.status === 404) {
+    return null;
+  }
+  if (!response.ok) {
+    throw new Error(`Harness summary failed: ${await readErrorDetail(response)}`);
+  }
+  return (await response.json()) as HarnessRunSummary;
+}
+
+export async function fetchHarnessCommands(): Promise<HarnessCommand[]> {
+  const response = await fetch(`${API_BASE_URL}/api/harness/commands`);
+  if (!response.ok) {
+    throw new Error(`Harness commands failed: ${await readErrorDetail(response)}`);
+  }
+  const payload = (await response.json()) as { commands?: HarnessCommand[] };
+  return payload.commands ?? [];
+}
+
+export async function dryRunHarnessCommand(
+  commandId: string,
+  parameters: Record<string, unknown>,
+): Promise<HarnessCommandDryRun> {
+  const response = await fetch(`${API_BASE_URL}/api/harness/commands/${encodeURIComponent(commandId)}/dry-run`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ parameters }),
+  });
+  if (!response.ok) {
+    throw new Error(`Harness command dry-run failed: ${await readErrorDetail(response)}`);
+  }
+  return (await response.json()) as HarnessCommandDryRun;
+}
+
+export async function fetchHarnessTimeline(projectId: string): Promise<HarnessTimeline | null> {
+  const response = await fetch(`${API_BASE_URL}/api/archives/${encodeURIComponent(projectId)}/harness/timeline`);
+  if (response.status === 404) {
+    return null;
+  }
+  if (!response.ok) {
+    throw new Error(`Harness timeline failed: ${await readErrorDetail(response)}`);
+  }
+  return (await response.json()) as HarnessTimeline;
+}
+
+export async function fetchHarnessExport(projectId: string): Promise<Record<string, unknown> | null> {
+  const response = await fetch(`${API_BASE_URL}/api/archives/${encodeURIComponent(projectId)}/harness/export`);
+  if (response.status === 404) {
+    return null;
+  }
+  if (!response.ok) {
+    throw new Error(`Harness export failed: ${await readErrorDetail(response)}`);
+  }
+  return (await response.json()) as Record<string, unknown>;
+}
+
+export async function fetchHarnessArtifactManifest(projectId: string): Promise<HarnessArtifactManifest | null> {
+  const response = await fetch(`${API_BASE_URL}/api/archives/${encodeURIComponent(projectId)}/harness/artifacts`);
+  if (response.status === 404) {
+    return null;
+  }
+  if (!response.ok) {
+    throw new Error(`Harness artifacts failed: ${await readErrorDetail(response)}`);
+  }
+  return (await response.json()) as HarnessArtifactManifest;
+}
+
+export async function dryRunHarnessArtifactCleanup(projectId: string): Promise<HarnessArtifactCleanup | null> {
+  const response = await fetch(`${API_BASE_URL}/api/archives/${encodeURIComponent(projectId)}/harness/artifacts/cleanup-dry-run`, {
+    method: "POST",
+  });
+  if (response.status === 404) {
+    return null;
+  }
+  if (!response.ok) {
+    throw new Error(`Harness artifact cleanup dry-run failed: ${await readErrorDetail(response)}`);
+  }
+  return (await response.json()) as HarnessArtifactCleanup;
 }
 
 export async function runAgentEvalHarness(

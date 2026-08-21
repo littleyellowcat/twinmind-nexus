@@ -1,0 +1,41 @@
+name: TwinMind Report
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "src/project_archive/**"
+      - "scripts/**"
+      - "tests/unit/test_project_archive_harness.py"
+      - "docs/**"
+      - "config/**"
+
+permissions:
+  contents: read
+
+jobs:
+  report:
+    name: Report-only runner
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Inspect environment
+        run: python scripts/dev_env_doctor.py --json > twinmind-dev-env.json
+
+      - name: Render report-only markdown
+        run: python scripts/github_report_runner.py --input docs/examples/twinmind_report_payload.json --output twinmind-report.md
+
+      - name: Upload report artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: twinmind-report
+          path: |
+            twinmind-dev-env.json
+            twinmind-report.md

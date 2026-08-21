@@ -17,7 +17,10 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Pattern, Set
 
-import jieba
+try:
+    import jieba
+except ModuleNotFoundError:  # pragma: no cover - optional tokenizer fallback.
+    jieba = None  # type: ignore[assignment]
 
 from src.core.types import ProcessedQuery
 
@@ -222,8 +225,7 @@ class QueryProcessor:
         """
         tokens: List[str] = []
 
-        # Use jieba to segment (handles Chinese + keeps English intact)
-        raw_tokens = jieba.lcut(text)
+        raw_tokens = _segment_text(text)
 
         for token in raw_tokens:
             token = token.strip()
@@ -278,7 +280,7 @@ class QueryProcessor:
                 break
         
         return keywords
-    
+
     def add_stopwords(self, words: Set[str]) -> None:
         """Add words to stopword set.
         
@@ -294,6 +296,12 @@ class QueryProcessor:
             words: Set of words to remove
         """
         self.config.stopwords -= words
+
+
+def _segment_text(text: str) -> List[str]:
+    if jieba is not None:
+        return list(jieba.lcut(text))
+    return re.findall(r"[A-Za-z0-9_]+|[\u4e00-\u9fff]", text)
 
 
 def create_query_processor(

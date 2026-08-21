@@ -1,0 +1,23 @@
+# TwinMind Nexus LLM Map
+
+TwinMind Nexus turns project archives into graph, RAG, multimodal evidence, AgentEval, and intelligence reports.
+
+Important paths:
+
+- `src/project_archive/service.py`: orchestration layer for ingestion, querying, reports, missions, and harness integration.
+- `src/project_archive/api.py`: FastAPI endpoints used by the frontend.
+- `src/project_archive/harness_*.py`: opencode-inspired harness events, artifacts, governance, policy, commands, export, summary, and retention helpers.
+- `src/project_archive/provider_runtime.py`: provider failure categorization and secret redaction helpers.
+- `src/project_archive/agent_profiles.py`: TwinMind role profile loading and capability matrix source.
+- `scripts/dev_env_doctor.py`: stdlib-only environment diagnostics.
+- `scripts/harness_*.py`: stdlib/local harness inspection CLIs.
+- `scripts/github_report_runner.py`: report-only markdown renderer for CI.
+- `frontend/src`: React UI and API bindings.
+- `tests/unit/test_project_archive_harness.py`: focused harness behavior tests.
+
+Constraints:
+
+- TwinMind agents analyze evidence; they do not run shell commands, edit files, deploy, or push code.
+- Live model calls, paid operations, and external APIs require explicit confirmation.
+- Harness exports must redact absolute local paths and secrets.
+- CLI diagnostics should run without project dependencies where feasible.
